@@ -100,6 +100,36 @@ def ensure_plan(c: Clients, campaign_id: str, seed: int) -> list[dict]:
     return plan
 
 
+def retry_postmortems(ev: Evaluator, api_url: str, campaign_id: str, env: str) -> None:
+    """Ask once more for any incident of this campaign that has a verdict but no postmortem. The verdict and its
+    score are already fixed; the service only runs the missing stage, from the stored facts."""
+    rows = ev.query(
+        f"""
+        SELECT f.execution_name
+        FROM `{ev.truth}.fault_ledger` f
+        JOIN `{ev.ledger}.incidents` i ON i.source_execution = f.execution_name
+        WHERE DATE(f.injected_at) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+          AND DATE(i.detected_at) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+          AND f.campaign_id = @campaign AND f.execution_name IS NOT NULL
+          AND EXISTS (SELECT 1 FROM `{ev.ledger}.agent_verdicts` v
+                      WHERE DATE(v.created_at) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+                        AND v.incident_id = i.incident_id AND v.agent_name = 'root_cause')
+          AND NOT EXISTS (SELECT 1 FROM `{ev.ledger}.agent_verdicts` v
+                          WHERE DATE(v.created_at) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+                            AND v.incident_id = i.incident_id AND v.agent_name = 'postmortem')
+        ORDER BY f.plan_position""",
+        [bq.ScalarQueryParameter("campaign", "STRING", campaign_id)],
+    )
+    for row in rows:
+        response = diagnose(api_url, row["execution_name"], env)
+        say(
+            "postmortem retry",
+            execution=row["execution_name"],
+            status=response["status"],
+            degraded_reason=response.get("degraded_reason"),
+        )
+
+
 def run_campaign(campaign_id: str, seed: int, limit: int | None, finalize: bool) -> int:
     settings = Settings.from_env()
     api_url = os.environ["TRACE_API_URL"]
@@ -162,6 +192,8 @@ def run_campaign(campaign_id: str, seed: int, limit: int | None, finalize: bool)
             done_now += 1
     finally:
         scheduler("pause", settings)
+
+    retry_postmortems(ev, api_url, campaign_id, settings.env)
 
     if finalize:
         left = evaluate(ev, campaign_id, include_unanswered=True)

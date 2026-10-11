@@ -41,7 +41,8 @@ class LLM:
         self._groq_key = clean_key(env.get("GROQ_API_KEY", ""))
         self._gemini_key = clean_key(env.get("GEMINI_API_KEY", ""))
         self.postmortem_model = env.get("POSTMORTEM_MODEL", "").strip() or DEFAULT_POSTMORTEM_MODEL
-        self._client = client or httpx.Client(timeout=90)
+        # Read timeout sized for a slow postmortem generation; two attempts still fit in the 600 s request.
+        self._client = client or httpx.Client(timeout=httpx.Timeout(200, connect=15))
 
     def _post(self, url: str, headers: dict, body: dict, provider: str) -> tuple[dict, int]:
         """One call, plus one retry after a short provider-requested wait on a rate limit."""
@@ -50,6 +51,10 @@ class LLM:
             calls += 1
             try:
                 response = self._client.post(url, headers=headers, json=body)
+            except httpx.TimeoutException as exc:
+                if attempt == 1:
+                    continue
+                raise LLMError(f"{provider}: {type(exc).__name__}") from exc
             except httpx.HTTPError as exc:
                 raise LLMError(f"{provider}: {type(exc).__name__}") from exc
             if response.status_code == 429:

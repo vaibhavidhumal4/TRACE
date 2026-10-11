@@ -1,8 +1,8 @@
 [
   {
-    "name": "keep-two-newest",
+    "name": "keep-newest",
     "action": {"type": "Keep"},
-    "mostRecentVersions": {"keepCount": 2}
+    "mostRecentVersions": {"keepCount": 1}
   },
   {
     "name": "delete-the-rest",

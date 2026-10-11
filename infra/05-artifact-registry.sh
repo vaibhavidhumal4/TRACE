@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Docker repository for TRACE images, with a cleanup policy that keeps the 2 newest versions of each image and
+# Docker repository for TRACE images, with a cleanup policy that keeps the newest version of each image and
 # deletes the rest, and push access for github-deployer on this repository only. Safe to re-run.
 # Usage: infra/05-artifact-registry.sh [--apply]
 set -euo pipefail

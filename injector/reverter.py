@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import UTC, datetime
 
@@ -41,9 +42,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fault-id", help="revert this one fault now, even if its revert_at has not passed")
     args = parser.parse_args(argv)
-    c = Clients(Settings.from_env())
-    reverted, failed = revert_open_faults(c, due_only=args.fault_id is None, fault_id=args.fault_id)
-    log("INFO", f"maintenance pass finished: {reverted} restored, {failed} failed")
+    # OPS_ENVS lets one scheduled job cover both environments, e.g. "dev,prod". Default: just TRACE_ENV.
+    base = dict(os.environ)
+    envs = [e.strip() for e in base.get("OPS_ENVS", base.get("TRACE_ENV", "dev")).split(",") if e.strip()]
+    reverted = failed = 0
+    for env_name in envs:
+        c = Clients(Settings.from_env({**base, "TRACE_ENV": env_name}))
+        done, bad = revert_open_faults(c, due_only=args.fault_id is None, fault_id=args.fault_id)
+        reverted, failed = reverted + done, failed + bad
+    log("INFO", f"maintenance pass finished: {reverted} restored, {failed} failed", envs=envs)
     return 1 if failed else 0
 
 

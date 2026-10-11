@@ -1,0 +1,56 @@
+name: ops-deploy
+
+# Build the maintenance image and deploy the Cloud Run job that runs it. Keyless sign-in.
+on:
+  push:
+    branches: [phase-3]
+    paths: ["injector/**", ".github/workflows/ops-deploy.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ops-deploy
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT: project-66f56fc9-9de6-4cfd-8cf
+  REGION: us-central1
+  IMAGE: us-central1-docker.pkg.dev/project-66f56fc9-9de6-4cfd-8cf/trace/ops
+  OPS_SA: ops-automation@project-66f56fc9-9de6-4cfd-8cf.iam.gserviceaccount.com
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Lint
+        run: |
+          pip install ruff==0.17.0
+          ruff check injector
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/616734266046/locations/global/workloadIdentityPools/github/providers/github-actions
+          service_account: github-deployer@project-66f56fc9-9de6-4cfd-8cf.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Build and push
+        run: |
+          docker build -f injector/Dockerfile -t "$IMAGE:$GITHUB_SHA" .
+          docker push "$IMAGE:$GITHUB_SHA"
+          bytes=$(docker manifest inspect "$IMAGE:$GITHUB_SHA" | jq '[.layers[].size] | add')
+          echo "compressed image: $(( bytes / 1024 / 1024 )) MB"
+
+      - name: Deploy the job
+        run: |
+          gcloud run jobs deploy trace-maintenance-runner --project "$GCP_PROJECT" --region "$REGION" \
+            --image "$IMAGE:$GITHUB_SHA" --service-account "$OPS_SA" \
+            --max-retries=0 --task-timeout=300 --cpu=1 --memory=512Mi \
+            --set-env-vars="^@^GCP_PROJECT=$GCP_PROJECT@OPS_ENVS=dev,prod" --quiet

@@ -20,7 +20,7 @@ env:
   REGION: us-central1
   IMAGE: us-central1-docker.pkg.dev/project-66f56fc9-9de6-4cfd-8cf/trace/etl
   ETL_SA: trace-etl@project-66f56fc9-9de6-4cfd-8cf.iam.gserviceaccount.com
-  RETAINED_IMAGES: "2"
+  RETAINED_IMAGES: "1"
   IMAGE_BUDGET_MB: "400"
 
 jobs:

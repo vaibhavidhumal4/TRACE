@@ -57,10 +57,11 @@ class LLM:
                     continue
                 raise QuotaExhausted(f"{provider}: HTTP 429")
             if response.status_code >= 400:
-                raise LLMError(
-                    f"{provider}: HTTP {response.status_code} ({response.headers.get('content-type', 'no content-type')}, "
-                    f"{len(response.content)} bytes, server {response.headers.get('server', '?')}): {response.text[:300]}"
+                detail = (
+                    f"{response.headers.get('content-type', 'no content-type')}, {len(response.content)} bytes, "
+                    f"server {response.headers.get('server', '?')}"
                 )
+                raise LLMError(f"{provider}: HTTP {response.status_code} ({detail}): {response.text[:300]}")
             return response.json(), calls
         raise QuotaExhausted(f"{provider}: HTTP 429")
 

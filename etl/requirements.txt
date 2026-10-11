@@ -1,0 +1,6 @@
+pandas==3.0.6
+pyarrow==26.0.0
+db-dtypes==1.7.2
+google-cloud-bigquery==3.46.1
+httpx==0.28.1
+pytz==2026.5

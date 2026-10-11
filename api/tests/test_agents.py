@@ -154,3 +154,11 @@ def test_agent_code_never_mentions_ground_truth():
 
 def test_fakes_round_trip_json():
     assert json.loads(verdict_json())["confidence"] == 0.9
+
+
+def test_clean_key_removes_paste_artifacts():
+    from api.llm import clean_key
+
+    assert clean_key("\x1b[200~abc_DEF-123\x1b[201~\n") == "abc_DEF-123"
+    assert clean_key("  abc\x01def\x7f\r\n") == "abcdef"
+    assert clean_key("abc_DEF-123") == "abc_DEF-123"

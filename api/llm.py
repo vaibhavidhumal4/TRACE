@@ -7,6 +7,7 @@ Gemini's quota is exhausted. Keys come from environment variables populated from
 from __future__ import annotations
 
 import os
+import re
 import time
 from dataclasses import dataclass
 
@@ -36,9 +37,8 @@ class Completion:
 class LLM:
     def __init__(self, env: dict[str, str] | None = None, client: httpx.Client | None = None) -> None:
         env = dict(os.environ) if env is None else env
-        # A secret saved with a trailing newline or space would make an invalid header.
-        self._groq_key = env.get("GROQ_API_KEY", "").strip()
-        self._gemini_key = env.get("GEMINI_API_KEY", "").strip()
+        self._groq_key = clean_key(env.get("GROQ_API_KEY", ""))
+        self._gemini_key = clean_key(env.get("GEMINI_API_KEY", ""))
         self._client = client or httpx.Client(timeout=90)
 
     def _post(self, url: str, headers: dict, body: dict, provider: str) -> tuple[dict, int]:
@@ -106,6 +106,17 @@ class LLM:
         if not text.strip():
             raise LLMError("gemini: empty response")
         return Completion(text, POSTMORTEM_MODEL, calls)
+
+
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def clean_key(raw: str) -> str:
+    """Remove what a terminal paste can leave in a stored key: escape sequences (such as bracketed-paste
+    markers), other control characters, and surrounding whitespace. A control character inside the
+    Authorization header makes the provider reject the request with an empty HTTP 400."""
+    return _CONTROL.sub("", _ANSI_ESCAPE.sub("", raw)).strip()
 
 
 def _retry_after(response: httpx.Response) -> float | None:

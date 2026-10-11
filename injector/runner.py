@@ -34,7 +34,15 @@ def snapshot(c: Clients) -> dict:
     }
 
 
-def start_fault(c: Clients, fault_type: str, params: dict, *, campaign_id: str, seed: int | None) -> str:
+def start_fault(
+    c: Clients,
+    fault_type: str,
+    params: dict,
+    *,
+    campaign_id: str,
+    seed: int | None,
+    ttl: timedelta = DEFAULT_TTL,
+) -> str:
     """Record the fault and its revert plan, then inject. Returns the fault_id."""
     plan = build_revert_plan(c, fault_type, params)
     fault_id = ledger.record_fault(
@@ -43,7 +51,7 @@ def start_fault(c: Clients, fault_type: str, params: dict, *, campaign_id: str, 
         expected_category=CATALOG[fault_type].expected_category,
         params=params,
         revert_plan=plan,
-        revert_at=datetime.now(UTC) + DEFAULT_TTL,
+        revert_at=datetime.now(UTC) + ttl,
         seed=seed,
         campaign_id=campaign_id,
     )

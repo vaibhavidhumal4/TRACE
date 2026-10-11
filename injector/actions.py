@@ -7,6 +7,7 @@ ledger, and only then inject. A revert plan is self-contained, so the reverter c
 from __future__ import annotations
 
 import re
+import time
 
 from google.cloud import bigquery as bq
 from google.cloud import run_v2
@@ -104,7 +105,7 @@ def revert(c: Clients, plan: dict) -> None:
 def _set_task_timeout(c: Clients, job_path: str, seconds: int) -> None:
     job = c.jobs.get_job(name=job_path)
     job.template.template.timeout = duration_pb2.Duration(seconds=seconds)
-    c.jobs.update_job(job=job).result(timeout=300)
+    _update_job(c, job)
 
 
 def _set_job_env(c: Clients, job_path: str, name: str, value: str | None) -> None:
@@ -116,4 +117,21 @@ def _set_job_env(c: Clients, job_path: str, name: str, value: str | None) -> Non
         kept.append(run_v2.EnvVar(name=name, value=value))
     del container.env[:]
     container.env.extend(kept)
-    c.jobs.update_job(job=job).result(timeout=300)
+    _update_job(c, job)
+
+
+def _update_job(c: Clients, job: run_v2.Job, timeout_s: int = 180) -> None:
+    """Send the update and wait until the job has settled.
+
+    The wait polls the job itself. Polling the returned operation would need run.operations.get on the project,
+    which the maintenance identity deliberately does not have (its rights are on the target jobs only).
+    """
+    c.jobs.update_job(job=job)
+    deadline = time.monotonic() + timeout_s
+    while True:
+        time.sleep(3)
+        current = c.jobs.get_job(name=job.name)
+        if not current.reconciling:
+            return
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"job {job.name} was still reconciling after {timeout_s} s")

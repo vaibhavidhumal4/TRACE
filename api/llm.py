@@ -36,8 +36,9 @@ class Completion:
 class LLM:
     def __init__(self, env: dict[str, str] | None = None, client: httpx.Client | None = None) -> None:
         env = dict(os.environ) if env is None else env
-        self._groq_key = env.get("GROQ_API_KEY", "")
-        self._gemini_key = env.get("GEMINI_API_KEY", "")
+        # A secret saved with a trailing newline or space would make an invalid header.
+        self._groq_key = env.get("GROQ_API_KEY", "").strip()
+        self._gemini_key = env.get("GEMINI_API_KEY", "").strip()
         self._client = client or httpx.Client(timeout=90)
 
     def _post(self, url: str, headers: dict, body: dict, provider: str) -> tuple[dict, int]:
@@ -56,7 +57,10 @@ class LLM:
                     continue
                 raise QuotaExhausted(f"{provider}: HTTP 429")
             if response.status_code >= 400:
-                raise LLMError(f"{provider}: HTTP {response.status_code}: {response.text[:300]}")
+                raise LLMError(
+                    f"{provider}: HTTP {response.status_code} ({response.headers.get('content-type', 'no content-type')}, "
+                    f"{len(response.content)} bytes, server {response.headers.get('server', '?')}): {response.text[:300]}"
+                )
             return response.json(), calls
         raise QuotaExhausted(f"{provider}: HTTP 429")
 

@@ -1,0 +1,74 @@
+name: etl-deploy
+
+# Test, build the ETL image, push it to Artifact Registry and deploy both Cloud Run jobs. Keyless sign-in
+# (Workload Identity Federation). Values below are identifiers, not secrets; they mirror infra/config.env.
+on:
+  push:
+    branches: [phase-1]
+    paths: ["etl/**", ".github/workflows/etl-deploy.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: etl-deploy
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT: project-66f56fc9-9de6-4cfd-8cf
+  REGION: us-central1
+  IMAGE: us-central1-docker.pkg.dev/project-66f56fc9-9de6-4cfd-8cf/trace/etl
+  ETL_SA: trace-etl@project-66f56fc9-9de6-4cfd-8cf.iam.gserviceaccount.com
+  RETAINED_IMAGES: "2"
+  IMAGE_BUDGET_MB: "400"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: etl/requirements-dev.txt
+      - name: Lint and test before building
+        run: |
+          pip install -r etl/requirements-dev.txt
+          ruff check etl
+          pytest -q
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/616734266046/locations/global/workloadIdentityPools/github/providers/github-actions
+          service_account: github-deployer@project-66f56fc9-9de6-4cfd-8cf.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Build and push
+        run: |
+          docker build -f etl/Dockerfile -t "$IMAGE:$GITHUB_SHA" .
+          docker push "$IMAGE:$GITHUB_SHA"
+
+      - name: Image size against the storage budget
+        run: |
+          bytes=$(docker manifest inspect "$IMAGE:$GITHUB_SHA" | jq '[.layers[].size] | add')
+          mb=$(( bytes / 1024 / 1024 ))
+          retained=$(( mb * RETAINED_IMAGES ))
+          echo "compressed image: ${mb} MB; ${RETAINED_IMAGES} retained: ${retained} MB; budget ${IMAGE_BUDGET_MB} MB"
+          test "$retained" -le "$IMAGE_BUDGET_MB"
+
+      - name: Deploy the jobs
+        run: |
+          deploy() {  # job name, dataset
+            gcloud run jobs deploy "$1" --project "$GCP_PROJECT" --region "$REGION" \
+              --image "$IMAGE:$GITHUB_SHA" --service-account "$ETL_SA" \
+              --max-retries=0 --task-timeout=900 --cpu=1 --memory=512Mi \
+              --labels=trace-scope=target \
+              --set-env-vars="GCP_PROJECT=$GCP_PROJECT,BQ_DATASET=$2" --quiet
+          }
+          deploy trace-target-etl-dev trace_target_dev
+          deploy trace-target-etl trace_target

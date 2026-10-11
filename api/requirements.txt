@@ -1,0 +1,9 @@
+fastapi==0.143.0
+uvicorn==0.54.0
+pydantic==2.14.0
+httpx==0.28.1
+langgraph==1.2.14
+langchain-core==1.6.9
+google-cloud-bigquery==3.46.1
+google-cloud-logging==3.17.0
+google-cloud-run==0.16.2

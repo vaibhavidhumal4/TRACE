@@ -413,6 +413,7 @@ that ever cost money are Workload Identity Federation and Secret Manager active 
 | `trace-evaluator` | Evaluation and memory promotion | `dataViewer` on `trace_ledger`; table-level `dataEditor` on `trace_ledger.incident_memory` **only**; `dataEditor` on `trace_truth`; `jobUser`; secret accessor for the LLM key (embeddings + ablation re-runs) |
 | `trace-mcp` | `trace-mcp` service (read-only MCP server) | `dataViewer` on `trace_ledger` and `trace_target`; `jobUser`; `logging.viewAccessor` on the `target-only` view; secret accessor for the MCP token only. **No** `trace_truth`, **no** LLM key, no write roles |
 | `trace-dashboard` | `trace-dashboard` service | `dataViewer` on `trace_ledger` and `trace_target`; table-level `dataViewer` on `trace_truth.evaluation_results` **only** (so it can show accuracy without the agents ever seeing truth); `jobUser`; secret accessor for the dashboard token only |
+| `trace-scheduler` | Cloud Scheduler triggers (added 2026-10-11) | `run.invoker` on the job each schedule starts, and nothing else: `trace-target-etl` now, `trace-maintenance-runner` when the reverter is scheduled. No project roles, no data access |
 | `github-deployer` (via WIF) | GitHub Actions | `run.developer`, `artifactregistry.writer`, `iam.serviceAccountUser` on the six runtime accounts above only; `bigquery.jobUser` plus `bigquery.dataEditor` on `trace_ledger_dev` **only**, so the Phase 0 acceptance run can do `SELECT 1` and one ledger insert (added 2026-10-11). **No** role on the prod `trace_ledger`, on `trace_target` or on `trace_truth` |
 
 Six runtime accounts plus the deployer, all free. Pub/Sub push subscriptions authenticate with OIDC as a dedicated invoker identity
@@ -506,11 +507,12 @@ Tick boxes as work completes and add dated notes to the decision log at the bott
   **Passed 2026-10-11** (run 38132931515 on `phase-0`; the insert goes to `trace_ledger_dev`, see section 6).
 
 ### Phase 1: Target system live
-- [ ] Port the ETL from `reference/aqi_hourly_colab.py` (section 2, items 1-12), containerize, unit-test `transform()`
-- [ ] Deploy as Cloud Run Job (`--max-retries=0`) and schedule it. The designed production schedule is every 4 h. For the demo the
+- [x] Port the ETL from `reference/aqi_hourly_colab.py` (section 2, items 1-12), containerize, unit-test `transform()`
+- [x] Deploy as Cloud Run Job (`--max-retries=0`) and schedule it. The designed production schedule is every 4 h. For the demo the
   job is scheduled every 10 minutes temporarily, three consecutive scheduled runs are accepted, and the schedule is then paused
 - **Acceptance:** 3 consecutive scheduled runs end `SUCCESS`; re-running inserts 0 duplicate rows; queries stay under the byte cap;
   `pipeline_runs` has START and END rows. (Baseline for TC-15.)
+  **Passed 2026-10-11** on the temporary 10-minute schedule (executions `trace-target-etl-xl7nk`, `-6kd9z`, `-pdcc8`); the schedule is now paused.
 
 ### Phase 2: Detection and incident ledger (designed, next steps: skipped for the demo)
 The demo's campaign runner calls `trace-api` directly (4.1), so the log sink, Pub/Sub push and watchdog are not built now. The
@@ -700,3 +702,9 @@ The demo shows Looker Studio over the BigQuery views from Phase 5 instead. The i
 2026-10-11 - PHASE 0 ACCEPTANCE PASSED: GitHub Actions run 38132931515 signed in as `github-deployer` with no key file, ran `SELECT 1`, inserted one row into `trace_ledger_dev.incident_events` and read it back.
 2026-10-11 - Revised demo plan (human decision): record a real run, not live. ETL on a temporary 10-minute schedule for Phase 1 acceptance, then paused (designed schedule stays every 4 h). One campaign runner does inject -> execute job -> wait for failure -> call `trace-api` -> revert -> score, borrowing `ops-automation`, `trace-agents` (inside `trace-api`) and `trace-evaluator` per step. 12 incidents, 3 of each fault, seed logged before the run, no reselection, every incident scored. Pub/Sub trigger and Phase 2 detection deferred. Results shown in Looker Studio over views in `trace_truth`. Order: Phase 1, then 3, 4, 5.
 2026-10-11 - The human's pasted messages in this project are their own instructions (stated 2026-10-11).
+2026-10-11 - Phase 1 deployed (human approved): workflow `etl-deploy` builds the ETL image in GitHub Actions, pushes it to Artifact Registry and deploys Cloud Run jobs `trace-target-etl` (dataset `trace_target`) and `trace-target-etl-dev` (`trace_target_dev`), both as `trace-etl`, `--max-retries=0`, 900 s task timeout, 1 vCPU / 512 MB, label `trace-scope=target`. Compressed image 153 MB.
+2026-10-11 - Verified: a hand-run execution of the dev job (`trace-target-etl-dev-cgwt5`, running as `trace-etl`) wrote its JSON logs, the container exit line and the Cloud Run system event into the restricted bucket, readable through the `target-only` view. An execution takes about 2 minutes end to end, of which the pipeline itself is about 10 seconds.
+2026-10-11 - New service account `trace-scheduler` (human approved; not in the original section 6): `run.invoker` on `trace-target-etl` only, used by Cloud Scheduler job `trace-target-etl-schedule`. Scheduler job count is now 1.
+2026-10-11 - PHASE 1 ACCEPTANCE PASSED on the temporary `*/10 * * * *` schedule: three consecutive scheduled executions ended SUCCESS with 36/36 states; the first inserted 1512 rows and the next two inserted 0; 1512 rows = 1512 distinct (state, ts); every run has START and END rows; the largest query billed 20 MB against the 100 MB cap. The schedule was then PAUSED. The designed production schedule is `0 */4 * * *` (in `infra/config.env`).
+2026-10-11 - ETL defaults chosen: `HTTP_TIMEOUT_S=20`, `MIN_STATES_OK=30`, five tries with 1/2/4/8 s backoff (no sleep after the last try). The staging table is named per run and expires after one hour, so a killed run leaves nothing behind for long. Each idempotent insert bills 20 MB (the 10 MB minimum for each of two tables).
+2026-10-11 - Artifact Registry budget risk: the ETL image is 153 MB compressed, so two retained versions are 306 MB before the maintenance and API images exist; three images at two versions each would pass the roughly 0.5 GB free allowance. To be decided with the human: keep one version per image.

@@ -42,6 +42,7 @@ def start_fault(
     campaign_id: str,
     seed: int | None,
     ttl: timedelta = DEFAULT_TTL,
+    plan_position: int | None = None,
 ) -> str:
     """Record the fault and its revert plan, then inject. Returns the fault_id."""
     plan = build_revert_plan(c, fault_type, params)
@@ -54,6 +55,7 @@ def start_fault(
         revert_at=datetime.now(UTC) + ttl,
         seed=seed,
         campaign_id=campaign_id,
+        plan_position=plan_position,
     )
     inject(c, fault_type, params)
     time.sleep(SETTLE_SECONDS.get(fault_type, 5))

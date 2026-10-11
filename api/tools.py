@@ -24,12 +24,14 @@ class Tools:
         store: Store,
         log_client: logging_v2.Client | None = None,
         jobs_client: run_v2.JobsClient | None = None,
+        executions_client: run_v2.ExecutionsClient | None = None,
     ) -> None:
         self.settings = settings
         self.target = target
         self.store = store
         self._logs = log_client or logging_v2.Client(project=settings.project)
         self._jobs = jobs_client or run_v2.JobsClient()
+        self._executions = executions_client or run_v2.ExecutionsClient()
 
     def _entries(self, log_filter: str, limit: int) -> list[dict]:
         entries = self._logs.list_entries(
@@ -120,6 +122,20 @@ class Tools:
             "memory": container.resources.limits.get("memory"),
             "last_modifier": job.last_modifier,
             "update_time": job.update_time.isoformat() if job.update_time else None,
+        }
+
+    def get_execution_times(self, execution: str) -> dict:
+        """When the execution started and finished (Cloud Run Admin API, read-only)."""
+        name = (
+            f"projects/{self.settings.project}/locations/{self.settings.region}"
+            f"/jobs/{self.target.job}/executions/{execution}"
+        )
+        ex = self._executions.get_execution(name=name)
+        return {
+            "execution_started_at": ex.start_time.isoformat() if ex.start_time else None,
+            "execution_completed_at": ex.completion_time.isoformat() if ex.completion_time else None,
+            "succeeded_count": ex.succeeded_count,
+            "failed_count": ex.failed_count,
         }
 
     def get_data_freshness(self) -> dict:

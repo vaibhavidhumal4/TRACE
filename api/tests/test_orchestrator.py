@@ -16,7 +16,13 @@ def test_full_flow_runs_the_four_stages_in_order():
     assert state["status"] == "complete"
     assert state["completed_stages"] == ["triage", "root_cause", "remediation", "postmortem"]
     assert state["llm_calls"] == 2
-    assert [e["stage"] for e in deps.store.events(incident_id)] == state["completed_stages"]
+    assert [e["stage"] for e in deps.store.events(incident_id)] == [
+        "triage",
+        "evidence",
+        "root_cause",
+        "remediation",
+        "postmortem",
+    ]
     assert sorted(v["agent_name"] for v in deps.store.verdicts) == ["postmortem", "remediation", "root_cause", "triage"]
     assert state["memory_enabled"] is False
 
@@ -33,7 +39,7 @@ def test_tc26_same_request_twice_makes_no_duplicate_verdicts_and_no_second_llm_c
     assert state["status"] == "complete"
     assert len(deps.store.verdicts) == verdicts == 4
     assert (len(deps.llm.groq_calls), len(deps.llm.gemini_calls)) == (groq, gemini) == (1, 1)
-    assert len(deps.store.events(first_id)) == 4
+    assert len(deps.store.events(first_id)) == 5
 
 
 def test_resume_after_a_crash_runs_only_the_missing_stages():
@@ -84,3 +90,27 @@ def test_provider_failure_in_root_cause_degrades_and_is_not_diagnosed_by_another
     assert state["status"] == "degraded" and state["completed_stages"] == ["triage"]
     assert deps.llm.gemini_calls == []
     assert not any(v["agent_name"] == "root_cause" for v in deps.store.verdicts)
+
+
+def test_a_retry_diagnoses_from_the_evidence_stored_the_first_time():
+    class FlakyLLM(FakeLLM):
+        def __init__(self):
+            super().__init__()
+            self.fail = True
+
+        def groq(self, *args, **kwargs):
+            if self.fail:
+                raise LLMError("groq: HTTP 503")
+            return super().groq(*args, **kwargs)
+
+    llm = FlakyLLM()
+    deps = make_deps(llm=llm)
+    incident_id = deps.store.open_incident(EXECUTION, "direct_call")
+    assert run_incident(incident_id, deps)["status"] == "degraded"
+    # The system changes after the first attempt (for example, the cause is undone).
+    deps.tools._logs = [{"severity": "INFO", "message": "everything is fine now", "count": 1}]
+    llm.fail = False
+    state = run_incident(incident_id, deps)
+    assert state["status"] == "complete"
+    assert "403 Access Denied" in llm.groq_calls[0]["user"]
+    assert "everything is fine now" not in llm.groq_calls[0]["user"]

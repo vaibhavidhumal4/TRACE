@@ -52,6 +52,10 @@ def handle_incident(request: IncidentRequest) -> IncidentResponse:
         raise HTTPException(status_code=422, detail=f"execution does not belong to job {target.job}")
     deps = build_deps(target)
     incident_id = deps.store.open_incident(request.execution, detector="direct_call")
+    # Detection facts, recorded once: when the failed execution ran. The evaluator attributes by this time.
+    deps.store.append_event(
+        incident_id, "execution_window", "detector", deps.tools.get_execution_times(request.execution)
+    )
     log("INFO", "incident accepted", incident_id=incident_id, execution=request.execution, env=request.env)
     state = run_incident(incident_id, deps)
     stages = {e["stage"]: e["payload"] for e in deps.store.events(incident_id)}

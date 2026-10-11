@@ -84,7 +84,13 @@ def parse_verdict(text: str) -> RootCauseVerdict:
 
 def run(incident_id: str, deps) -> dict:
     incident = deps.store.incident(incident_id)
-    evidence = gather_evidence(incident, deps)
+    # Evidence is gathered once and stored before any LLM call. A retry (after a cap or a provider outage) diagnoses
+    # from the stored snapshot, taken while the failure was live, not from whatever the system looks like later.
+    stored = next((e["payload"] for e in deps.store.events(incident_id) if e["stage"] == "evidence"), None)
+    if stored is None:
+        stored = json.loads(json.dumps(gather_evidence(incident, deps), default=str))
+        deps.store.append_event(incident_id, "evidence", "root_cause", stored)
+    evidence = stored
     prompt = "Evidence for the failed run:\n" + evidence_text(evidence)
     started = time.monotonic()
     calls = 0

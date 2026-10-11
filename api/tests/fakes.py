@@ -89,6 +89,9 @@ class FakeTools:
     def get_data_freshness(self) -> dict:
         return self.store.freshness()
 
+    def get_execution_times(self, execution: str) -> dict:
+        return {"execution_started_at": "2026-10-11T12:27:34+00:00", "execution_completed_at": None}
+
 
 class FakeLLM:
     def __init__(self, groq_replies: list[str] | None = None, gemini_quota_exhausted: bool = False) -> None:

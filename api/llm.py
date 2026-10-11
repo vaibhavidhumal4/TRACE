@@ -13,10 +13,11 @@ from dataclasses import dataclass
 
 import httpx
 
-from api.config import POSTMORTEM_MODEL, ROOT_CAUSE_MODEL
+from api.config import DEFAULT_POSTMORTEM_MODEL, ROOT_CAUSE_MODEL
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+GEMINI_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
 class LLMError(Exception):
@@ -39,6 +40,7 @@ class LLM:
         env = dict(os.environ) if env is None else env
         self._groq_key = clean_key(env.get("GROQ_API_KEY", ""))
         self._gemini_key = clean_key(env.get("GEMINI_API_KEY", ""))
+        self.postmortem_model = env.get("POSTMORTEM_MODEL", "").strip() or DEFAULT_POSTMORTEM_MODEL
         self._client = client or httpx.Client(timeout=90)
 
     def _post(self, url: str, headers: dict, body: dict, provider: str) -> tuple[dict, int]:
@@ -84,20 +86,16 @@ class LLM:
             raise LLMError("groq: unexpected response shape") from exc
         return Completion(text, ROOT_CAUSE_MODEL, calls)
 
-    def gemini(self, system: str, user: str, *, max_tokens: int = 2048) -> Completion:
+    def gemini(self, system: str, user: str, *, max_tokens: int = 6000) -> Completion:
         if not self._gemini_key:
             raise LLMError("gemini: no API key configured")
         body = {
             "systemInstruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": [{"text": user}]}],
-            "generationConfig": {
-                "temperature": 0.2,
-                "maxOutputTokens": max_tokens,
-                "thinkingConfig": {"thinkingBudget": 0},
-            },
+            "generationConfig": {"temperature": 0.2, "maxOutputTokens": max_tokens},
         }
         data, calls = self._post(
-            GEMINI_URL.format(model=POSTMORTEM_MODEL), {"x-goog-api-key": self._gemini_key}, body, "gemini"
+            GEMINI_URL.format(model=self.postmortem_model), {"x-goog-api-key": self._gemini_key}, body, "gemini"
         )
         try:
             text = "".join(part.get("text", "") for part in data["candidates"][0]["content"]["parts"])
@@ -105,7 +103,32 @@ class LLM:
             raise LLMError("gemini: unexpected response shape") from exc
         if not text.strip():
             raise LLMError("gemini: empty response")
-        return Completion(text, POSTMORTEM_MODEL, calls)
+        return Completion(text, self.postmortem_model, calls)
+
+    def gemini_model_status(self) -> dict:
+        """Ask the provider's model list whether the configured postmortem model exists and can generate text.
+        Makes no generation call and uses no generation quota."""
+        if not self._gemini_key:
+            raise LLMError("gemini: no API key configured")
+        try:
+            response = self._client.get(
+                GEMINI_MODELS_URL, headers={"x-goog-api-key": self._gemini_key}, params={"pageSize": 1000}
+            )
+        except httpx.HTTPError as exc:
+            raise LLMError(f"gemini: {type(exc).__name__}") from exc
+        if response.status_code >= 400:
+            raise LLMError(f"gemini: HTTP {response.status_code}: {response.text[:300]}")
+        models = response.json().get("models", [])
+        wanted = f"models/{self.postmortem_model}"
+        match = next((m for m in models if m.get("name") == wanted), None)
+        return {
+            "postmortem_model": self.postmortem_model,
+            "listed": match is not None,
+            "supports_generate_content": bool(
+                match and "generateContent" in match.get("supportedGenerationMethods", [])
+            ),
+            "listed_flash_models": sorted(m["name"].split("/", 1)[1] for m in models if "flash" in m.get("name", "")),
+        }
 
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")

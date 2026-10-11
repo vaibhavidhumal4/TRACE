@@ -127,8 +127,8 @@ def test_postmortem_uses_gemini_and_records_the_model():
     deps = make_deps()
     incident_id = deps.store.open_incident("trace-target-etl-dev-abc12", "direct_call")
     result = postmortem.run(incident_id, deps)
-    assert result["model"] == "gemini-2.5-flash" and result["fallback_reason"] is None
-    assert deps.store.verdicts[-1]["model"] == "gemini-2.5-flash"
+    assert result["model"] == "gemini-3.8-flash" and result["fallback_reason"] is None
+    assert deps.store.verdicts[-1]["model"] == "gemini-3.8-flash"
 
 
 def test_postmortem_falls_back_to_groq_when_gemini_quota_is_exhausted():

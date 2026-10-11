@@ -112,7 +112,7 @@ class FakeLLM:
         self.gemini_calls.append({"system": system, "user": user})
         if self.gemini_quota_exhausted:
             raise QuotaExhausted("gemini: HTTP 429")
-        return Completion("## Summary\nThe run failed.", "gemini-2.5-flash", 1)
+        return Completion("## Summary\nThe run failed.", "gemini-3.8-flash", 1)
 
 
 def verdict_json(category: str = "authorization_failure", confidence: float = 0.9) -> str:

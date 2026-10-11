@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from fastapi import FastAPI, HTTPException
 
 from api.config import Settings, Target
-from api.llm import LLM
+from api.llm import LLM, LLMError
 from api.orchestrator.graph import Deps, run_incident
 from api.schemas import IncidentRequest, IncidentResponse
 from api.store import Store
@@ -43,6 +43,15 @@ def build_deps(target: Target) -> Deps:
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
+
+
+@app.get("/llm/check")
+def llm_check() -> dict:
+    """Whether the configured postmortem model is in the provider's model list. No generation call."""
+    try:
+        return LLM().gemini_model_status()
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/incidents", response_model=IncidentResponse)

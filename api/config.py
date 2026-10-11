@@ -6,7 +6,8 @@ import os
 from dataclasses import dataclass
 
 ROOT_CAUSE_MODEL = "openai/gpt-oss-120b"
-POSTMORTEM_MODEL = "gemini-2.5-flash"
+# Default only. The deployed value comes from the POSTMORTEM_MODEL environment variable.
+DEFAULT_POSTMORTEM_MODEL = "gemini-3.8-flash"
 
 
 @dataclass(frozen=True)

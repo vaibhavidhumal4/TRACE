@@ -20,6 +20,7 @@ env:
   REGION: us-central1
   IMAGE: us-central1-docker.pkg.dev/project-66f56fc9-9de6-4cfd-8cf/trace/api
   AGENTS_SA: trace-agents@project-66f56fc9-9de6-4cfd-8cf.iam.gserviceaccount.com
+  POSTMORTEM_MODEL: gemini-3.8-flash
 
 jobs:
   deploy:
@@ -58,7 +59,7 @@ jobs:
             --image "$IMAGE:$GITHUB_SHA" --service-account "$AGENTS_SA" \
             --no-allow-unauthenticated --ingress=all \
             --min-instances=0 --max-instances=2 --concurrency=4 --timeout=600 --cpu=1 --memory=512Mi \
-            --set-env-vars="GCP_PROJECT=$GCP_PROJECT,LLM_DAILY_CALL_CAP=60" \
+            --set-env-vars="GCP_PROJECT=$GCP_PROJECT,LLM_DAILY_CALL_CAP=60,POSTMORTEM_MODEL=$POSTMORTEM_MODEL" \
             --set-secrets="GROQ_API_KEY=groq-api-key:latest,GEMINI_API_KEY=gemini-api-key:latest" --quiet
 
       - name: Fail if the service is public

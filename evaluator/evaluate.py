@@ -107,8 +107,12 @@ class Evaluator:
         )
 
 
-def evaluate(ev: Evaluator, campaign_id: str | None) -> list[dict]:
-    """Score every attributable incident not yet scored. Returns all rows scored in this call."""
+def evaluate(ev: Evaluator, campaign_id: str | None, *, include_unanswered: bool = True) -> list[dict]:
+    """Score every attributable incident not yet scored. Returns all rows scored in this call.
+
+    With include_unanswered=False, incidents that have no verdict yet are left for a later call (used while a
+    campaign is still running and a retry is possible). The final call scores them as wrong.
+    """
     faults = ev.faults(campaign_id)
     done = ev.already_scored()
     scored = []
@@ -117,6 +121,8 @@ def evaluate(ev: Evaluator, campaign_id: str | None) -> list[dict]:
             continue
         fault = attribute(incident["started_at"], faults)
         if fault is None:
+            continue
+        if incident["predicted_category"] is None and not include_unanswered:
             continue
         ttd = None
         if incident["verdict_at"] is not None:

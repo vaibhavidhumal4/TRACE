@@ -58,6 +58,9 @@ class LLM:
                     time.sleep(wait)
                     continue
                 raise QuotaExhausted(f"{provider}: HTTP 429")
+            if response.status_code in (500, 502, 503, 504) and attempt == 1:
+                time.sleep(10)  # "high demand" and similar are usually brief
+                continue
             if response.status_code >= 400:
                 detail = (
                     f"{response.headers.get('content-type', 'no content-type')}, {len(response.content)} bytes, "

@@ -22,7 +22,7 @@ def rate(run_rows: list[dict], freshness: dict) -> TriageResult:
     end = next((r for r in reversed(run_rows) if r.get("phase") == "END"), {})
     states_ok, states_total = end.get("states_ok"), end.get("states_total")
     staleness = freshness.get("staleness_hours")
-    staleness = float(staleness) if staleness is not None else None
+    staleness = round(float(staleness), 1) if staleness is not None else None
     stale = staleness is None or staleness > STALE_HOURS
 
     reasons = [f"run status {status}"]

@@ -40,8 +40,8 @@ def build_deps(target: Target) -> Deps:
     )
 
 
-@app.get("/healthz")
-def healthz() -> dict:
+@app.get("/health")
+def health() -> dict:
     return {"ok": True}
 
 

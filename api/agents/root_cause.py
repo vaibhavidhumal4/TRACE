@@ -34,6 +34,13 @@ Rules:
 "evidence": ["<short quoted fact>", "..."]}"""
 
 MAX_EVIDENCE_CHARS = 9000  # about 3K tokens with the instructions
+CHANGE_WINDOW_HOURS = 0.5
+
+
+def _as_utc(value) -> datetime:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    return datetime.now(UTC)
 
 
 def gather_evidence(incident: dict, deps) -> dict:
@@ -46,7 +53,11 @@ def gather_evidence(incident: dict, deps) -> dict:
         "recent_finished_runs": runs["recent_finished_runs"],
         "run_logs": deps.tools.get_run_logs(execution),
         "current_job_config": deps.tools.get_job_config(),
-        "changes_in_last_3h": deps.tools.get_recent_changes(3, before=datetime.now(UTC)),
+        # Only the half hour up to detection: incidents can follow each other closely, and older changes
+        # belong to earlier incidents.
+        "changes_in_30_min_before_detection": deps.tools.get_recent_changes(
+            CHANGE_WINDOW_HOURS, before=_as_utc(incident.get("detected_at"))
+        ),
         "data_freshness": deps.tools.get_data_freshness(),
     }
 
@@ -55,7 +66,7 @@ def evidence_text(evidence: dict) -> str:
     """Compact JSON for the prompt. If it is too long, the least decisive sections are trimmed first."""
     trimmed = dict(evidence)
     text = json.dumps(trimmed, default=str, separators=(",", ":"))
-    for key in ("recent_finished_runs", "changes_in_last_3h", "run_logs"):
+    for key in ("recent_finished_runs", "changes_in_30_min_before_detection", "run_logs"):
         if len(text) <= MAX_EVIDENCE_CHARS:
             break
         items = trimmed[key]

@@ -96,7 +96,7 @@ def test_evidence_text_stays_within_the_prompt_budget():
         "execution": "x",
         "run_logs": [{"message": "m" * 400, "count": 1} for _ in range(60)],
         "recent_finished_runs": [{"status": "SUCCESS"}] * 5,
-        "changes_in_last_3h": [{"detail": "d" * 500}] * 8,
+        "changes_in_30_min_before_detection": [{"detail": "d" * 500}] * 8,
     }
     assert len(root_cause.evidence_text(evidence)) <= root_cause.MAX_EVIDENCE_CHARS
 

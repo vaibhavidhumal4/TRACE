@@ -28,9 +28,18 @@ This file is the source of truth for how to build it. Read all of it before writ
 9. **No skipped points, no shortcuts.** Every checklist item in section 9 and every test case must be implemented as written. If
    something is blocked (quota, permission, plan limit, a service that does not behave as documented), stop, report the exact
    error, and ask. Never substitute a weaker approach, stub it, or tick a box silently.
-10. **Scope is fixed (decision 2026-10-09).** In: a LangGraph orchestrator (4.1), embedding-based memory retrieval (4.2), and a
-    read-only MCP server (4.3). Out: n8n (it cannot run on the free tier without a laptop or a VM, and a laptop breaks rule 1).
-    Do not add other frameworks or services without asking.
+10. **Scope is fixed (decision 2026-10-11, demo scope; replaces the 2026-10-09 scope).** Where another section still describes
+    the wider design, this rule wins.
+    - **In:** four faults (`iam_revoked`, `bq_extra_column`, `task_timeout_kill`, `bad_endpoint_url`), injected by changing the job,
+      the dataset permissions or the table directly; a closed four-category taxonomy with no `unknown`; six components (Triage,
+      Root-Cause, Remediation, Postmortem, Evaluation, and a thin LangGraph orchestrator); about 20 labelled incidents; accuracy
+      and a confusion matrix, shown as a simple results table in BigQuery.
+    - **Designed, next steps (do not build now):** the upstream gateway service and the faults that need it (`upstream_slow`,
+      `upstream_429`, `upstream_schema_drift`, `partial_upstream`), `dataset_missing`, the `unknown` category, control runs,
+      embedding memory and the memory ablation (4.2), the MCP server (4.3), and the dashboard service (Phase 6).
+    - **Out:** n8n (it cannot run on the free tier without a laptop or a VM, and a laptop breaks rule 1).
+    - Every IAM and no-leakage rule (rules 4, 6, 7, 8 and sections 5.3 and 6) is unchanged by the reduced scope.
+    - Do not add other frameworks or services without asking.
 
 ---
 
@@ -191,35 +200,51 @@ Every query goes through one helper that sets `maximum_bytes_billed` (default 10
 
 ## 4. Agents
 
-Common contract: input is `incident_id`. Each agent reads through a small allow-list of **read-only tools**, returns JSON validated
+Six components. Only **Root-Cause** and **Postmortem** call an LLM; Triage, Remediation, Evaluation and the Orchestrator are
+rule-based code.
+
+Common contract: input is `incident_id`. Each component reads through a small allow-list of **read-only tools**, returns JSON validated
 by a pydantic schema, and writes to `agent_verdicts` + `incident_events` with idempotency key `{incident_id}:{stage}`.
 Cap LLM calls per incident (default 12) and per day (env `LLM_DAILY_CALL_CAP`). Keep an `llm.py` interface with provider fallback.
 Only send this project's own logs to free-tier LLMs (providers may use free-tier inputs for training). No personal data exists here.
 
-| Agent | Job | Output |
-|---|---|---|
-| Triage | Severity from run status, blast radius (states affected), staleness | `severity` in Low/Medium/High/Critical |
-| Root-Cause | Diagnose from evidence; **must choose from the closed taxonomy** | `root_cause_category`, free-text hypothesis, `confidence` 0-1, `evidence[]` |
-| Remediation | Propose fixes | `proposals[]`: `{action, risk, blast_radius, rollback, confidence}`. Never executes |
-| Postmortem | Markdown report from the incident timeline | text stored in BigQuery |
-| Evaluation | Deterministic scoring against `trace_truth` (runs as a different service account); also promotes training-split incidents into `incident_memory` (4.2) | rows in `evaluation_results`, rows in `incident_memory` |
-| Orchestrator | LangGraph graph that runs Triage, Root-Cause, Remediation and Postmortem for one incident (4.1); not an LLM agent | stage events in `incident_events` |
+| Component | LLM? | Job | Output |
+|---|---|---|---|
+| Triage | No (rules) | Severity from run status, blast radius (states affected), staleness | `severity` in Low/Medium/High/Critical |
+| Root-Cause | **Yes** | Diagnose from evidence; **must choose from the closed taxonomy** | `root_cause_category`, free-text hypothesis, `confidence` 0-1, `evidence[]` |
+| Remediation | No (rules) | Look up the fault catalog's standard fix for the diagnosed category and record it as a proposal. A ledger write only; never executes | `proposals[]`: `{action, risk, blast_radius, rollback, confidence}` |
+| Postmortem | **Yes** | Markdown report from the incident timeline | text stored in BigQuery, with the model that wrote it |
+| Evaluation | No (deterministic, never an LLM) | Scores verdicts against `trace_truth`. Runs **separately, as `trace-evaluator`, after** the orchestrator's four stages; the orchestrator never invokes it, because it runs as `trace-agents` and must not reach truth | rows in `evaluation_results` |
+| Orchestrator | No | Thin LangGraph graph that runs Triage, Root-Cause, Remediation and Postmortem in order for one incident (4.1) | stage events in `incident_events` |
 
-**Root-Cause tools (all read-only):** `get_pipeline_runs(n)`, `get_run_logs(execution)` (Cloud Logging API),
-`get_recent_config_changes(hours)` (Cloud Run Admin API + Audit Logs), `get_iam_changes(hours)`,
-`get_bq_job_errors(hours)` (`INFORMATION_SCHEMA.JOBS`), `get_data_freshness()`, `get_anomaly_stats(metric)` (plain-SQL rolling
-z-score; free, no GPU), `get_similar_past_incidents(k)` (`VECTOR_SEARCH` over `trace_ledger.incident_memory`, see 4.2).
+**Models (decision 2026-10-11).**
+- **Root-Cause: Groq `openai/gpt-oss-120b`, reasoning effort `low`.** No fallback model: every accuracy number must come from one
+  model. If Groq is unavailable or a cap is hit, the incident takes the `degraded` route (4.1) and is retried later; it is never
+  diagnosed by a different model.
+- **Postmortem: Gemini 2.5 Flash, falling back to Groq `openai/gpt-oss-120b` when the daily Gemini quota is exhausted.** Record the
+  model that actually wrote each postmortem (`agent_verdicts.model` and the postmortem event payload).
+- **Keep prompts compact, about 3K tokens.** Groq allows 8K tokens per minute and 200K per day, so that is at most two Root-Cause
+  calls a minute and roughly 60 a day. Root-Cause therefore gathers its evidence with the read-only tools in code first and makes
+  **one** LLM call per incident; the caller paces requests to stay under the per-minute limit.
 
-**Closed root-cause taxonomy** (agent must output exactly one; `unknown` is allowed and expected when evidence is insufficient):
-`resource_limit_exceeded`, `authorization_failure`, `network_timeout`, `upstream_rate_limited`, `warehouse_schema_mismatch`,
-`upstream_schema_drift`, `partial_data_loss`, `dns_or_endpoint_unreachable`, `unknown`.
-A closed enum makes accuracy a deterministic equality check. An LLM judge may score explanation quality separately, never accuracy.
+**Root-Cause tools (all read-only):** `get_pipeline_runs(n)`, `get_run_logs(execution)` (Cloud Logging API, through the restricted
+log view), `get_recent_config_changes(hours)` (Cloud Run Admin API + Audit Logs), `get_iam_changes(hours)`,
+`get_bq_job_errors(hours)` (`INFORMATION_SCHEMA.JOBS`), `get_data_freshness()`. Designed, next steps: `get_anomaly_stats(metric)`
+and `get_similar_past_incidents(k)` (4.2).
 
-**Memory.** `get_similar_past_incidents` may use only `trace_ledger.incident_memory`, which the evaluator fills from a *training*
-split. Score accuracy only on incidents *not* in memory (`split = 'heldout'`), and run the evaluation with memory on and off
-(`memory_enabled`). That ablation is the project's answer to "tools treat every incident in isolation". Details in 4.2.
+**Closed root-cause taxonomy** (the agent must output exactly one of these four; there is **no** `unknown` option):
+`authorization_failure`, `warehouse_schema_mismatch`, `resource_limit_exceeded`, `dns_or_endpoint_unreachable`.
+A closed enum makes accuracy a deterministic equality check. Never an LLM judge for accuracy.
+Designed, next steps: the wider nine-category taxonomy (`network_timeout`, `upstream_rate_limited`, `upstream_schema_drift`,
+`partial_data_loss`, `unknown`) that goes with the deferred faults in 5.1.
+
+**Memory: designed, next steps.** No memory retrieval is built for the demo, so `memory_enabled` is always `false`. The design is
+kept in 4.2.
 
 ### 4.1 Orchestrator (LangGraph)
+- Demo scope: the graph runs four stages. Only `root_cause` and `postmortem` call an LLM; `triage` and `remediation` are rule-based
+  nodes. Evaluation is **not** a node: it runs afterwards as `trace-evaluator` (section 4 table). `memory_enabled` stays in the state
+  and is always `false`.
 - One `StateGraph` in `api/orchestrator/graph.py`. Each node **wraps the existing agent function unchanged**; do not rewrite agents to
   fit LangGraph. State is a small typed dict: `incident_id`, `memory_enabled`, `completed_stages`, `llm_calls`, `status`.
 - Flow: `load_state` -> `triage` -> `root_cause` -> `remediation` -> `postmortem` -> END. `load_state` reads `incident_events` and
@@ -236,7 +261,7 @@ split. Score accuracy only on incidents *not* in memory (`split = 'heldout'`), a
 - Tests: TC-26 (deliver the same message twice: no duplicate verdicts and no second LLM call); TC-27 (cap reached: ends in
   `degraded`, no crash).
 
-### 4.2 Embedding memory
+### 4.2 Embedding memory (designed, next steps: not built for the demo)
 - `get_similar_past_incidents(k)` embeds the current incident's sanitized evidence text and runs `VECTOR_SEARCH` (`COSINE`, exact
   brute force; no vector index is needed at this size) over `trace_ledger.incident_memory`. It returns `k` neighbours (default 3) with
   category, resolution summary and distance, excludes the current incident, is read-only, and runs under `maximum_bytes_billed`. The
@@ -265,7 +290,7 @@ split. Score accuracy only on incidents *not* in memory (`split = 'heldout'`), a
   are not free or are too limited, embed inside the container with a small ONNX model (CPU, no API quota). Never fall back silently to a
   plain lookup.
 
-### 4.3 MCP server (`trace-mcp`)
+### 4.3 MCP server (`trace-mcp`) (designed, next steps: not built for the demo)
 - Purpose: let Claude Desktop, or any MCP client, query TRACE read-only. Use the official `mcp` Python SDK's `FastMCP` over
   **streamable HTTP with `stateless_http=True`** (Cloud Run may run several instances and scales to zero between calls). Same image as
   `trace-api`, its own Cloud Run service `trace-mcp`, its own service account `trace-mcp`. Claude connects from Anthropic's cloud, not
@@ -299,22 +324,33 @@ split. Score accuracy only on incidents *not* in memory (`split = 'heldout'`), a
 
 ### 5.1 Fault catalog (each maps to a test case and a taxonomy label)
 
+Exactly four faults, each injected by changing the job, the dataset permissions or the table directly. No upstream gateway
+service is involved. About 5 injections of each, about 20 labelled incidents in total.
+
 | Fault | How (cloud-native, reversible) | Expected category | Test |
 |---|---|---|---|
-| `task_timeout_kill` | `gcloud run jobs update ... --task-timeout` to a few seconds so the run is killed mid-execution | `resource_limit_exceeded` | TC-10 |
 | `iam_revoked` | Remove the ETL service account's write access on `trace_target` | `authorization_failure` | TC-11 |
-| `upstream_slow` | Fault proxy delays responses beyond `HTTP_TIMEOUT_S` | `network_timeout` | TC-12 |
-| `upstream_429` | Fault proxy returns HTTP 429 | `upstream_rate_limited` | TC-13 |
 | `bq_extra_column` | `ALTER TABLE ... ADD COLUMN` on `aqi_hourly` so the `INSERT ... SELECT s.*` column count mismatches | `warehouse_schema_mismatch` | TC-14 |
-| `upstream_schema_drift` | Fault proxy renames JSON keys | `upstream_schema_drift` | extra |
-| `partial_upstream` | Fault proxy returns empty data for some states (run ends `PARTIAL`, exit 0) | `partial_data_loss` | TC-19 |
-| `bad_endpoint_url` | Override `OPEN_METEO_URL` with an unresolvable host | `dns_or_endpoint_unreachable` | extra |
-| `dataset_missing` (held out) | Rename the target dataset or table | not in taxonomy, expected answer `unknown` with low confidence | TC-22 |
-| none (control) | No fault, scheduled at random | no incident should open | TC-15, TC-18 |
+| `task_timeout_kill` | `gcloud run jobs update ... --task-timeout` to a few seconds so the run is killed mid-execution | `resource_limit_exceeded` | TC-10 |
+| `bad_endpoint_url` | Override `OPEN_METEO_URL` on the job with an unresolvable host | `dns_or_endpoint_unreachable` | extra |
 
 **Verify empirically in Phase 3** that each fault produces a distinct, observable signal in logs / `pipeline_runs`. Record the real
-error text. Drop or redesign any fault that is indistinguishable from another. Report a confusion matrix, since some pairs
-(`network_timeout` vs `dns_or_endpoint_unreachable`) are legitimately confusable.
+error text in the decision log. If two faults are confusable, **tell the human** before running the campaign. Report a confusion
+matrix.
+
+**No reselection.** The list of injections is fixed, with a logged seed, before the campaign runs. Every incident it produces is
+scored; none is dropped, re-run or replaced after results are seen.
+
+**Designed, next steps (not injected for the demo):**
+
+| Fault | How | Expected category | Test |
+|---|---|---|---|
+| `upstream_slow` | Fault proxy delays responses beyond `HTTP_TIMEOUT_S` | `network_timeout` | TC-12 |
+| `upstream_429` | Fault proxy returns HTTP 429 | `upstream_rate_limited` | TC-13 |
+| `upstream_schema_drift` | Fault proxy renames JSON keys | `upstream_schema_drift` | extra |
+| `partial_upstream` | Fault proxy returns empty data for some states (run ends `PARTIAL`, exit 0) | `partial_data_loss` | TC-19 |
+| `dataset_missing` (held out) | Rename the target dataset or table | not in taxonomy, expected answer `unknown` with low confidence | TC-22 |
+| none (control) | No fault, scheduled at random | no incident should open | TC-15, TC-18 |
 
 ### 5.2 Fault safety
 - The injector only touches resources labelled `trace-scope=target` and uses a least-privilege service account.
@@ -365,7 +401,7 @@ that ever cost money are Workload Identity Federation and Secret Manager active 
 | `trace-evaluator` | Evaluation and memory promotion | `dataViewer` on `trace_ledger`; table-level `dataEditor` on `trace_ledger.incident_memory` **only**; `dataEditor` on `trace_truth`; `jobUser`; secret accessor for the LLM key (embeddings + ablation re-runs) |
 | `trace-mcp` | `trace-mcp` service (read-only MCP server) | `dataViewer` on `trace_ledger` and `trace_target`; `jobUser`; `logging.viewAccessor` on the `target-only` view; secret accessor for the MCP token only. **No** `trace_truth`, **no** LLM key, no write roles |
 | `trace-dashboard` | `trace-dashboard` service | `dataViewer` on `trace_ledger` and `trace_target`; table-level `dataViewer` on `trace_truth.evaluation_results` **only** (so it can show accuracy without the agents ever seeing truth); `jobUser`; secret accessor for the dashboard token only |
-| `github-deployer` (via WIF) | GitHub Actions | `run.developer`, `artifactregistry.writer`, `iam.serviceAccountUser` on the six runtime accounts above only |
+| `github-deployer` (via WIF) | GitHub Actions | `run.developer`, `artifactregistry.writer`, `iam.serviceAccountUser` on the six runtime accounts above only; `bigquery.jobUser` plus `bigquery.dataEditor` on `trace_ledger_dev` **only**, so the Phase 0 acceptance run can do `SELECT 1` and one ledger insert (added 2026-10-11). **No** role on the prod `trace_ledger`, on `trace_target` or on `trace_truth` |
 
 Six runtime accounts plus the deployer, all free. Pub/Sub push subscriptions authenticate with OIDC as a dedicated invoker identity
 that holds `run.invoker` on `trace-api` only.
@@ -447,7 +483,7 @@ Tick boxes as work completes and add dated notes to the decision log at the bott
 - [ ] Create the six runtime service accounts (section 6) with exactly those roles, plus the Pub/Sub OIDC invoker identity
 - [ ] Restricted Cloud Logging bucket, `target-only` log view and sink (section 5.3); grant `logging.viewAccessor` on the view only
 - [ ] Record in the decision log: Gemini chat and embedding limits from AI Studio, Pub/Sub and Scheduler free counts, billing status
-- [ ] Verify Claude Desktop (Pro) can add a remote custom connector with a Request-header token before building the MCP server
+- Designed, next steps (MCP deferred, rule 10): verify Claude Desktop (Pro) can add a remote custom connector with a Request-header token
 - [ ] Artifact Registry repo with cleanup policy
 - [ ] Public GitHub repo, Workload Identity Federation for `github-deployer`, no JSON keys anywhere
 - [x] Create datasets `trace_target`, `trace_ledger`, `trace_truth` (+ `-dev`); apply DDL from section 3 via `sql/`
@@ -467,31 +503,34 @@ Tick boxes as work completes and add dated notes to the decision log at the bott
 - **Acceptance:** a deliberately failed run on the dev job opens exactly one incident; a healthy run opens none.
 
 ### Phase 3: Fault injector and ground truth
-- [ ] `trace-upstream-gateway` (neutral name, swappable `OPEN_METEO_URL`); injector job named `trace-maintenance-runner`
-- [ ] Assign `split` (memory | heldout) at planning, stratified by fault type, logged seed; heldout parameters differ from training
-- [ ] Injector with the catalog in 5.1, `fault_ledger` written **before** injection, reverter + dead-man's switch
-- [ ] Verify each fault's observable signature and record real error text; prune indistinguishable faults
-- [ ] Control (healthy) runs scheduled at random
-- **Acceptance:** every fault produces a distinct signature; a crashed injector is auto-reverted; agents' service account gets 403 on `trace_truth`;
+- [ ] Injector job named `trace-maintenance-runner` with the four faults in 5.1, `fault_ledger` written **before** injection, reverter + dead-man's switch
+- [ ] Fixed injection list (about 5 of each fault, about 20 in total) with a logged seed, decided before any run
+- [ ] Verify each fault's observable signature, record the real error text in the decision log, and tell the human if two faults are confusable
+- Designed, next steps: `trace-upstream-gateway` and the faults that need it; `split` assignment (memory | heldout); control runs
+- **Acceptance:** each of the four faults produces a distinct signature; a crashed injector is auto-reverted; agents' service account gets 403 on `trace_truth`;
   leakage audit TC-32 and TC-33 pass (no injector names or truth in anything the agents can read).
 
 ### Phase 4: Agents (one at a time, each with fixture-based unit tests plus one live cloud test)
-- [ ] 4a Triage
-- [ ] 4b Root-Cause (tools + closed taxonomy + `unknown` behaviour)
-- [ ] 4c Remediation (proposals only; IAM test proving writes fail with 403)
-- [ ] 4d Postmortem
-- [ ] 4e LangGraph orchestrator (section 4.1) over Pub/Sub push with idempotency-key skips and the `degraded` route (redeliver a message, confirm no duplicate verdicts)
-- [ ] 4f Embeddings client and `get_similar_past_incidents` over `VECTOR_SEARCH` (section 4.2), tested with fixture rows first, then one live call
-- **Acceptance:** TC-01 to TC-09, TC-20, TC-22, TC-26, TC-27, TC-30.
+- [ ] 4a Triage (rule-based, no LLM)
+- [ ] 4b Root-Cause (tools + closed four-category taxonomy; Groq `openai/gpt-oss-120b`, low reasoning effort, one call per incident)
+- [ ] 4c Remediation (rule-based: the catalog's standard fix as a ledger write only; IAM test proving writes to the target fail with 403)
+- [ ] 4d Postmortem (Gemini 2.5 Flash, Groq fallback when the daily quota is exhausted; the model used is recorded)
+- [ ] 4e Thin LangGraph orchestrator (section 4.1) over Pub/Sub push with idempotency-key skips and the `degraded` route (redeliver a message, confirm no duplicate verdicts)
+- Designed, next steps: 4f embeddings client and `get_similar_past_incidents` (TC-30); the `unknown` behaviour (TC-22)
+- **Acceptance:** TC-01 to TC-09, TC-20, TC-26, TC-27.
 
-### Phase 5: Evaluation harness and campaigns
-- [ ] Deterministic category match, time-to-diagnosis, false-positive / false-negative rates, confusion matrix
-- [ ] Resumable campaign runner (5.2) that stops at `LLM_DAILY_CALL_CAP` and continues next day
-- [ ] Evaluator promotes only `memory`-split incidents to `incident_memory`; memory on/off ablation re-runs Root-Cause only on stored evidence (within 30-day log retention), reports retrieval precision@1 beside accuracy
-- [ ] Agree an accuracy threshold with the mentor *before* running the campaign
-- **Acceptance:** TC-16 to TC-19 and TC-31 with real numbers from at least 50 labelled incidents.
+### Phase 5: Evaluation and campaign
+- [ ] Deterministic category match run as `trace-evaluator` after the orchestrator finishes; accuracy and a 4x4 confusion matrix. No LLM
+- [ ] Results table in BigQuery: each verdict beside its ground truth (`trace_truth.evaluation_results`, plus a summary view in `trace_truth`), readable by the human and `trace-evaluator` only
+- [ ] Campaign runner (5.2) that works through the fixed injection list, stops at the LLM caps and can resume
+- **Accuracy target: 80-90% on the four-way classification. A goal, not a pass/fail gate.** Report the number that comes out.
+  Never leak ground truth to the agents and never reselect incidents after seeing results (5.1).
+- Designed, next steps: time-to-diagnosis, false-positive / false-negative rates (TC-18), partial-data detection (TC-19), memory promotion and the
+  memory on/off ablation (TC-31)
+- **Acceptance:** TC-16 and TC-17 with real numbers from about 20 labelled incidents.
 
-### Phase 6: Dashboard and access
+### Phase 6: Dashboard and access (designed, next steps: not built for the demo)
+The demo shows the BigQuery results table from Phase 5 instead. The items below stay as the design.
 - [ ] **Frontend decision (updated 2026-10-09): server-rendered, no separate frontend platform, but its own service.** `trace-dashboard`
   (same image as `trace-api`, own entrypoint, runs as `trace-dashboard`) serves Jinja2 templates with Chart.js from a CDN. It is separate from
   `trace-api` so the dashboard identity can read truth-derived accuracy (`evaluation_results` only) while the agent identity never can.
@@ -622,3 +661,12 @@ Tick boxes as work completes and add dated notes to the decision log at the bott
 2026-10-11 - APIs enabled (human approved): Cloud Run, Cloud Scheduler, Pub/Sub, Secret Manager, Artifact Registry, IAM, plus four the checklist did not name: IAM Credentials and STS (needed by Workload Identity Federation), Cloud Resource Manager (project IAM bindings), Billing Budgets (budget alert). BigQuery and Cloud Logging were already on.
 2026-10-11 - Budget alert `trace-monthly-guardrail` created, scoped to this project, thresholds 50/90/100%. The billing account is in INR, so the "$1" budget is 85 INR (a budget must use the account currency). `infra/kill-switch` written; verified only against an empty project, so re-test it once the first Scheduler job and Cloud Run service exist.
 2026-10-11 - Datasets `trace_target`, `trace_ledger`, `trace_truth` and their `_dev` twins created in us-central1 from `sql/001`-`003` via `infra/apply-sql.sh`. `trace_target*` carry the label `trace-scope=target`. No IAM granted on them yet.
+2026-10-11 - `github-deployer` additionally gets `bigquery.jobUser` and `bigquery.dataEditor` on `trace_ledger_dev` only (human approved) - the Phase 0 acceptance run must insert into a ledger and section 6 gave the deployer no BigQuery role; the acceptance insert therefore targets the dev ledger, and the deployer has no access to the prod ledger or to `trace_truth`.
+2026-10-11 - `reference/aqi_hourly_colab.py` added: an unmodified copy of `data_pipeline.py` from github.com/vaibhavidhumal4/Air-Quality-ETL-Pipeline at commit f844b29. That repo holds only this one pipeline script; `aqi_pollution_days_colab.py` (the data.gov.in script) is not in it and has not been added. `creds.py` from that repo was deliberately not copied (it holds an API key).
+2026-10-11 - Service accounts created (human approved): `trace-etl`, `trace-agents`, `ops-automation`, `trace-evaluator`, `trace-mcp`, `trace-dashboard`, `trace-pubsub-invoker`, `github-deployer`; 31 grants applied by `infra/03-service-accounts.sh --apply` and read back from project, dataset, table and service-account policies. `trace-agents` has no entry on `trace_truth` or `trace_truth_dev`. The Phase 0 service-account box stays unticked until the remaining grants exist: `logging.viewAccessor` on the log view, secret accessors, `artifactregistry.writer`, `ops-automation` update rights on the target job and gateway, `run.invoker` for the Pub/Sub invoker.
+2026-10-11 - SCOPE CHANGE for the demo on 2026-10-12 (human decision; rule 10, sections 4, 5.1 and 9 updated). Four faults injected directly on the job, dataset permissions or table (`iam_revoked`, `bq_extra_column`, `task_timeout_kill`, `bad_endpoint_url`), about 5 each, about 20 labelled incidents. Closed four-category taxonomy, no `unknown`, no control runs. Only Root-Cause and Postmortem call an LLM; Triage, Remediation, Evaluation and the orchestrator are rule-based. Report accuracy and a confusion matrix only; target 80-90% as a goal, not a gate. This supersedes the 2026-09-28 target of 60 incidents at 70% and section 11 item 5.
+2026-10-11 - Designed, next steps (not built for the demo): upstream gateway and its four faults, `dataset_missing`, `unknown`, control runs, embedding memory and the ablation, MCP server, dashboard service. Test cases deferred with them: TC-15, TC-18, TC-22 (named by the human), and by consequence TC-12, TC-13, TC-19 (their faults are deferred), TC-30, TC-31 (memory), TC-25, TC-28, TC-29 (dashboard and MCP).
+2026-10-11 - Evaluation stays a separate step run as `trace-evaluator` after the orchestrator's four stages, and counts as the sixth component - the orchestrator runs as `trace-agents`, which must never reach `trace_truth`, so it cannot invoke the scoring itself.
+2026-10-11 - Models: Root-Cause on Groq `openai/gpt-oss-120b` with low reasoning effort and no fallback, so every accuracy number comes from one model. Postmortem on Gemini 2.5 Flash, falling back to Groq `openai/gpt-oss-120b` when the daily Gemini quota is exhausted; the model that wrote each postmortem is recorded. Supersedes the 2026-09-28 choice of Gemini for Root-Cause.
+2026-10-11 - Free-tier limits as given by the human (from the provider consoles). Gemini 2.5 Flash: 5 RPM / 250K TPM / 20 RPD. Gemini 2.5 Flash-Lite: 10 RPM / 250K TPM / 20 RPD; other Gemini models also 20 RPD. Gemini embedding: 100 RPM / 30K TPM / 1K RPD. Groq `openai/gpt-oss-120b`: 30 RPM / 8K TPM / 1K RPD / 200K TPD. Consequences: about 20 postmortems uses the whole Gemini day (hence the Groq fallback), and at about 3K tokens a prompt Groq allows two Root-Cause calls a minute and roughly 60 a day, so Root-Cause makes one LLM call per incident.
+2026-10-11 - Standing rules from the human: secret scan before every commit and push; push the `phase-0` branch only, not `main`; show the plan and the cost and wait for approval before any change to IAM, billing, Scheduler, Cloud Run, Pub/Sub or secrets. The dev job is named `trace-target-etl-dev`.

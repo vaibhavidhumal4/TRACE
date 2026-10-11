@@ -35,6 +35,7 @@ RUNTIME_ACCOUNTS=(trace-etl trace-agents ops-automation trace-evaluator trace-mc
 #   project  project-level role
 #   dataset  BigQuery dataset-level role (applied to the prod dataset and its dev twin)
 #   table    BigQuery table-level role   (applied to the prod table and its dev twin); resource is dataset.table
+#   dataset-exact  BigQuery dataset-level role on exactly the named dataset (no twin)
 #   actas    iam.serviceAccountUser on another service account; resource is that account's name
 GRANTS=(
   "dataset|trace-etl|roles/bigquery.dataEditor|$DS_TARGET"
@@ -70,11 +71,10 @@ GRANTS=(
 for runtime in "${RUNTIME_ACCOUNTS[@]}"; do
   GRANTS+=("actas|github-deployer|roles/iam.serviceAccountUser|$runtime")
 done
-# Optional extra lines (same format), e.g. what the Phase 0 acceptance workflow needs. Kept in config.env so the
-# deviation from the section 6 table is explicit and reviewable.
-for extra in ${EXTRA_GRANTS:-}; do
-  GRANTS+=("$extra")
-done
+# The Phase 0 acceptance workflow runs SELECT 1 and one insert as github-deployer. Dev ledger only: the deployer
+# gets no role on the prod ledger, trace_target or trace_truth (decision 2026-10-11, CLAUDE.md section 6).
+GRANTS+=("project|github-deployer|roles/bigquery.jobUser|")
+GRANTS+=("dataset-exact|github-deployer|roles/bigquery.dataEditor|${DS_LEDGER}${DEV_SUFFIX}")
 
 existing_accounts="$(gcloud iam service-accounts list --project "$GCP_PROJECT" --format='value(email)')"
 
@@ -96,6 +96,7 @@ for grant in "${GRANTS[@]}"; do
   case "$kind" in
     project) target="project" ;;
     dataset) target="datasets $resource, ${resource}${DEV_SUFFIX}" ;;
+    dataset-exact) target="dataset $resource" ;;
     table)   target="tables $resource, ${resource%%.*}${DEV_SUFFIX}.${resource#*.}" ;;
     actas)   target="service account $resource" ;;
     *) echo "Bad grant kind: $grant" >&2; exit 2 ;;
@@ -145,6 +146,9 @@ for grant in "${GRANTS[@]}"; do
     dataset)
       bq_grant SCHEMA "$resource" "$role" "$member"
       bq_grant SCHEMA "${resource}${DEV_SUFFIX}" "$role" "$member"
+      ;;
+    dataset-exact)
+      bq_grant SCHEMA "$resource" "$role" "$member"
       ;;
     table)
       bq_grant TABLE "$resource" "$role" "$member"

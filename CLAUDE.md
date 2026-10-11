@@ -224,7 +224,7 @@ Only send this project's own logs to free-tier LLMs (providers may use free-tier
 - **Root-Cause: Groq `openai/gpt-oss-120b`, reasoning effort `low`.** No fallback model: every accuracy number must come from one
   model. If Groq is unavailable or a cap is hit, the incident takes the `degraded` route (4.1) and is retried later; it is never
   diagnosed by a different model.
-- **Postmortem: Gemini 2.5 Flash, falling back to Groq `openai/gpt-oss-120b` when the daily Gemini quota is exhausted.** Record the
+- **Postmortem: Gemini Flash, model set by the `POSTMORTEM_MODEL` environment variable (currently `gemini-3.8-flash`; `gemini-2.5-flash` is no longer offered to new API users), falling back to Groq `openai/gpt-oss-120b` when the daily Gemini quota is exhausted, and only then.** Record the
   model that actually wrote each postmortem (`agent_verdicts.model` and the postmortem event payload).
 - **Keep prompts compact, about 3K tokens.** Groq allows 8K tokens per minute and 200K per day, so that is at most two Root-Cause
   calls a minute and roughly 60 a day. Root-Cause therefore gathers its evidence with the read-only tools in code first and makes
@@ -534,13 +534,14 @@ structured-log helper and the `incident_state` view are built in Phase 4 where t
   leakage audit TC-32 and TC-33 pass (no injector names or truth in anything the agents can read).
 
 ### Phase 4: Agents (one at a time, each with fixture-based unit tests plus one live cloud test)
-- [ ] 4a Triage (rule-based, no LLM)
-- [ ] 4b Root-Cause (tools + closed four-category taxonomy; Groq `openai/gpt-oss-120b`, low reasoning effort, one call per incident)
-- [ ] 4c Remediation (rule-based: the catalog's standard fix as a ledger write only; IAM test proving writes to the target fail with 403)
-- [ ] 4d Postmortem (Gemini 2.5 Flash, Groq fallback when the daily quota is exhausted; the model used is recorded)
-- [ ] 4e Thin LangGraph orchestrator (section 4.1) over Pub/Sub push with idempotency-key skips and the `degraded` route (redeliver a message, confirm no duplicate verdicts)
+- [x] 4a Triage (rule-based, no LLM)
+- [x] 4b Root-Cause (tools + closed four-category taxonomy; Groq `openai/gpt-oss-120b`, low reasoning effort, one call per incident)
+- [x] 4c Remediation (rule-based: the catalog's standard fix as a ledger write only; IAM test proving writes to the target fail with 403)
+- [x] 4d Postmortem (Gemini Flash set by config, Groq fallback when the daily quota is exhausted; the model used is recorded)
+- [x] 4e Thin LangGraph orchestrator (section 4.1) with idempotency-key skips and the `degraded` route (repeat a request, confirm no duplicate verdicts). Triggered by a direct HTTPS call for the demo; the Pub/Sub push trigger is designed, next steps
 - Designed, next steps: 4f embeddings client and `get_similar_past_incidents` (TC-30); the `unknown` behaviour (TC-22)
 - **Acceptance:** TC-01 to TC-09, TC-20, TC-26, TC-27.
+  Status 2026-10-11: TC-20 passed live (`tests/leakage_audit.py`); TC-26 and TC-27 pass as unit tests and the repeat-request behaviour was confirmed live. TC-01 to TC-09 are NOT ticked: the Test Case Document is not in the repo, so they could not be mapped to tests.
 
 ### Phase 5: Evaluation and campaign
 - [ ] Deterministic category match run as `trace-evaluator` after the orchestrator finishes; accuracy and a 4x4 confusion matrix. No LLM
@@ -721,3 +722,6 @@ The demo shows Looker Studio over the BigQuery views from Phase 5 instead. The i
 2026-10-11 - Evidence is gathered once per incident and stored as an `evidence` event before any LLM call; a retry diagnoses from that snapshot. The time the failed execution ran is stored as an `execution_window` event, which the evaluator uses for attribution. `get_bq_job_errors` and `get_anomaly_stats` are not built (the first needs a project-wide BigQuery permission the agent identity does not have).
 2026-10-11 - Human's account granted `iam.serviceAccountTokenCreator` on `trace-agents` for the audit only (approved). Datasets `trace_results` and `trace_results_dev` created for the Looker Studio views, access list exactly: the human, project owners, `trace-evaluator` (READER); `ops-automation` and `trace-agents` have no access.
 2026-10-11 - TC-20, TC-32, TC-33 PASSED with `trace-agents`' own credentials (`tests/leakage_audit.py`, 38 checks): 403 on every table and dataset in `trace_truth*` and `trace_results*`; 403 on INSERT, ALTER, DELETE and GRANT on the target dataset and on updating or running the target job; no maintenance-runner logs, truth-dataset audit entries or `trace-api` logs readable; a project-scoped log read returns only target-job, target-dataset and `trace-etl` entries (Cloud Logging answers it from the views the caller can access, it does not refuse it); no fault name or truth word in the Cloud Run config visible through `run.viewer`, in any of the 328 entries in the restricted view, or in anything stored in the dev incident ledger.
+2026-10-11 - Postmortem model changed by the human to `gemini-3.8-flash`, set through the `POSTMORTEM_MODEL` environment variable on `trace-api`; verified with the Gemini model-list call (`GET /llm/check` on `trace-api`: listed, supports generateContent). The model name is stored on every postmortem (`agent_verdicts.model` and the event payload). The provider limits recorded earlier were for 2.5 Flash; the 3.8 Flash limits have not been read from AI Studio.
+2026-10-11 - FIRST COMPLETE INCIDENT on dev (`960effdb`, schema fault): Triage High -> Root-Cause `warehouse_schema_mismatch` 0.99 (Groq, 1 call, 0.7 s) -> Remediation (standard fix, not executed) -> Postmortem (`gemini-3.8-flash`, 1 call, 15.8 s). A second incident (`cf584c9a`, permission fault) was diagnosed correctly as `authorization_failure`; its postmortem hit a Gemini HTTP 503 ("high demand"). `api/llm.py` now retries once after 10 s on a 5xx.
+2026-10-11 - Phase 5 built: `evaluator/` (deterministic scoring, attribution by the failed execution's start time, runs as `trace-evaluator`), `campaign/run.py` (one script, a different identity per step, plan written before the first injection, resumable, refuses a changed plan), bookkeeping columns `plan_position` and `execution_name` on `fault_ledger`, and views `incident_results`, `campaign_summary`, `confusion_matrix` in `trace_results*`. While a campaign is running an incident without a verdict is left for a retry; `--finalize` scores any still unanswered as wrong.

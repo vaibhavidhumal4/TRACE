@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Secrets and credentials (never commit; see CLAUDE.md rule 6)
+.env
+.env.*
+*.pem
+*.key
+*-key.json
+*credentials*.json
+gha-creds-*.json
+application_default_credentials.json
+
+# Local tooling
+.claude/
+.DS_Store

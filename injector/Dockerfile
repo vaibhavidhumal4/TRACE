@@ -1,0 +1,15 @@
+# Build from the repository root:  docker build -f injector/Dockerfile .
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1
+WORKDIR /app
+
+COPY injector/requirements.txt /app/injector/requirements.txt
+RUN pip install -r /app/injector/requirements.txt
+
+COPY injector/*.py /app/injector/
+
+RUN useradd --uid 10001 --no-create-home appuser
+USER 10001
+
+CMD ["python", "-m", "injector.reverter"]

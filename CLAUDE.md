@@ -32,11 +32,14 @@ This file is the source of truth for how to build it. Read all of it before writ
     the wider design, this rule wins.
     - **In:** four faults (`iam_revoked`, `bq_extra_column`, `task_timeout_kill`, `bad_endpoint_url`), injected by changing the job,
       the dataset permissions or the table directly; a closed four-category taxonomy with no `unknown`; six components (Triage,
-      Root-Cause, Remediation, Postmortem, Evaluation, and a thin LangGraph orchestrator); about 20 labelled incidents; accuracy
-      and a confusion matrix, shown as a simple results table in BigQuery.
+      Root-Cause, Remediation, Postmortem, Evaluation, and a thin LangGraph orchestrator); 12 labelled incidents (3 of each
+      fault) produced by one campaign runner and recorded, not shown live; accuracy and a confusion matrix, shown in Looker
+      Studio over BigQuery views.
     - **Designed, next steps (do not build now):** the upstream gateway service and the faults that need it (`upstream_slow`,
       `upstream_429`, `upstream_schema_drift`, `partial_upstream`), `dataset_missing`, the `unknown` category, control runs,
-      embedding memory and the memory ablation (4.2), the MCP server (4.3), and the dashboard service (Phase 6).
+      embedding memory and the memory ablation (4.2), the MCP server (4.3), the dashboard service (Phase 6), and the automatic
+      trigger (log sink -> Pub/Sub push, the freshness watchdog and the rest of Phase 2). For the demo the campaign runner
+      calls `trace-api` directly.
     - **Out:** n8n (it cannot run on the free tier without a laptop or a VM, and a laptop breaks rule 1).
     - Every IAM and no-leakage rule (rules 4, 6, 7, 8 and sections 5.3 and 6) is unchanged by the reduced scope.
     - Do not add other frameworks or services without asking.
@@ -245,6 +248,9 @@ kept in 4.2.
 - Demo scope: the graph runs four stages. Only `root_cause` and `postmortem` call an LLM; `triage` and `remediation` are rule-based
   nodes. Evaluation is **not** a node: it runs afterwards as `trace-evaluator` (section 4 table). `memory_enabled` stays in the state
   and is always `false`.
+- Demo trigger: the campaign runner calls an authenticated HTTPS endpoint on `trace-api` with the failed execution's name. The
+  endpoint opens the incident (dedupe on execution name) and runs the graph, all as `trace-agents`. The Pub/Sub push trigger
+  below is designed, next steps; the idempotency rules apply to the direct call in the same way.
 - One `StateGraph` in `api/orchestrator/graph.py`. Each node **wraps the existing agent function unchanged**; do not rewrite agents to
   fit LangGraph. State is a small typed dict: `incident_id`, `memory_enabled`, `completed_stages`, `llm_calls`, `status`.
 - Flow: `load_state` -> `triage` -> `root_cause` -> `remediation` -> `postmortem` -> END. `load_state` reads `incident_events` and
@@ -325,7 +331,7 @@ kept in 4.2.
 ### 5.1 Fault catalog (each maps to a test case and a taxonomy label)
 
 Exactly four faults, each injected by changing the job, the dataset permissions or the table directly. No upstream gateway
-service is involved. About 5 injections of each, about 20 labelled incidents in total.
+service is involved. 3 injections of each, 12 labelled incidents in total.
 
 | Fault | How (cloud-native, reversible) | Expected category | Test |
 |---|---|---|---|
@@ -360,6 +366,12 @@ scored; none is dropped, re-run or replaced after results are seen.
 - **Campaign runner:** the 4-hourly schedule gives only about 6 runs per day, so 50 labelled incidents would take weeks.
   Build an on-demand runner that does inject -> execute job -> detect -> diagnose -> revert -> evaluate, N times back-to-back
   (bounded by the LLM daily cap). The 4-hour schedule is for the live demo; campaigns produce the accuracy numbers.
+- **One campaign script, a different identity per step (decision 2026-10-11).** Per incident: inject, trigger the job directly
+  (`gcloud run jobs execute`), wait for the failure, call the orchestrator, revert, score. The script never holds all three
+  powers at once: it injects and reverts as `ops-automation`, the agents run as `trace-agents` inside the deployed `trace-api`
+  service (the script only sends it the execution name over HTTPS), and scoring runs as `trace-evaluator`. The agents therefore
+  never execute with credentials that can read `trace_truth`. The impersonation and invoker grants this needs are brought to
+  the human as a plan in Phase 3. The dead-man's-switch reverter stays.
 
 ### 5.3 Evaluation integrity (do not weaken these)
 - `trace_truth` is a separate dataset; `trace-agents` has **no** role on it. (The old SDD put `injected_fault_type` in `incidents`,
@@ -481,21 +493,28 @@ Tick boxes as work completes and add dated notes to the decision log at the bott
 - [x] $1 budget alert; write `infra/kill-switch`
 - [x] Enable only the needed APIs: BigQuery, Cloud Run, Cloud Scheduler, Pub/Sub, Secret Manager, Artifact Registry, Cloud Logging, IAM
 - [ ] Create the six runtime service accounts (section 6) with exactly those roles, plus the Pub/Sub OIDC invoker identity
-- [ ] Restricted Cloud Logging bucket, `target-only` log view and sink (section 5.3); grant `logging.viewAccessor` on the view only
+  (accounts and all grants on existing resources done 2026-10-11; still owed, with the resources they attach to: `ops-automation` update rights on the target job in Phase 3, `run.invoker` on `trace-api` in Phase 4)
+- [x] Restricted Cloud Logging bucket, `target-only` log view and sink (section 5.3); grant `logging.viewAccessor` on the view only
+  (granted to `trace-agents` only; `trace-mcp` and `trace-dashboard` get it when those services are built)
 - [ ] Record in the decision log: Gemini chat and embedding limits from AI Studio, Pub/Sub and Scheduler free counts, billing status
+  (LLM limits and billing status recorded 2026-10-11; the Pub/Sub and Scheduler free counts are NOT yet confirmed from a pricing page)
 - Designed, next steps (MCP deferred, rule 10): verify Claude Desktop (Pro) can add a remote custom connector with a Request-header token
-- [ ] Artifact Registry repo with cleanup policy
-- [ ] Public GitHub repo, Workload Identity Federation for `github-deployer`, no JSON keys anywhere
+- [x] Artifact Registry repo with cleanup policy
+- [x] Public GitHub repo, Workload Identity Federation for `github-deployer`, no JSON keys anywhere
 - [x] Create datasets `trace_target`, `trace_ledger`, `trace_truth` (+ `-dev`); apply DDL from section 3 via `sql/`
 - **Acceptance:** a GitHub Actions run authenticates with no key file and runs `SELECT 1` and a `trace_ledger` insert.
+  **Passed 2026-10-11** (run 38132931515 on `phase-0`; the insert goes to `trace_ledger_dev`, see section 6).
 
 ### Phase 1: Target system live
 - [ ] Port the ETL from `reference/aqi_hourly_colab.py` (section 2, items 1-12), containerize, unit-test `transform()`
-- [ ] Deploy as Cloud Run Job (`--max-retries=0`) and schedule every 4 h
+- [ ] Deploy as Cloud Run Job (`--max-retries=0`) and schedule it. The designed production schedule is every 4 h. For the demo the
+  job is scheduled every 10 minutes temporarily, three consecutive scheduled runs are accepted, and the schedule is then paused
 - **Acceptance:** 3 consecutive scheduled runs end `SUCCESS`; re-running inserts 0 duplicate rows; queries stay under the byte cap;
   `pipeline_runs` has START and END rows. (Baseline for TC-15.)
 
-### Phase 2: Detection and incident ledger
+### Phase 2: Detection and incident ledger (designed, next steps: skipped for the demo)
+The demo's campaign runner calls `trace-api` directly (4.1), so the log sink, Pub/Sub push and watchdog are not built now. The
+structured-log helper and the `incident_state` view are built in Phase 4 where the agents need them.
 - [ ] Structured-log helper shared by all services
 - [ ] Log sink -> Pub/Sub push subscription -> `trace-api /pubsub/incidents` with OIDC auth (`run.invoker` on `trace-api` only), 600 s ack deadline,
   processed synchronously (Cloud Run throttles CPU after the response); freshness watchdog; dedupe by execution name
@@ -504,7 +523,8 @@ Tick boxes as work completes and add dated notes to the decision log at the bott
 
 ### Phase 3: Fault injector and ground truth
 - [ ] Injector job named `trace-maintenance-runner` with the four faults in 5.1, `fault_ledger` written **before** injection, reverter + dead-man's switch
-- [ ] Fixed injection list (about 5 of each fault, about 20 in total) with a logged seed, decided before any run
+- [ ] Fixed injection list (3 of each fault, 12 in total) with a logged seed, decided before any run
+- [ ] Plan for the human's approval: impersonation of `ops-automation` and `trace-evaluator` and invoke rights on `trace-api` for the campaign runner (5.2)
 - [ ] Verify each fault's observable signature, record the real error text in the decision log, and tell the human if two faults are confusable
 - Designed, next steps: `trace-upstream-gateway` and the faults that need it; `split` assignment (memory | heldout); control runs
 - **Acceptance:** each of the four faults produces a distinct signature; a crashed injector is auto-reverted; agents' service account gets 403 on `trace_truth`;
@@ -521,16 +541,19 @@ Tick boxes as work completes and add dated notes to the decision log at the bott
 
 ### Phase 5: Evaluation and campaign
 - [ ] Deterministic category match run as `trace-evaluator` after the orchestrator finishes; accuracy and a 4x4 confusion matrix. No LLM
-- [ ] Results table in BigQuery: each verdict beside its ground truth (`trace_truth.evaluation_results`, plus a summary view in `trace_truth`), readable by the human and `trace-evaluator` only
-- [ ] Campaign runner (5.2) that works through the fixed injection list, stops at the LLM caps and can resume
+- [ ] Views in `trace_truth` for Looker Studio, readable by the human owner and `trace-evaluator` only (agents must never read them):
+  an incident view with one row per incident (incident id, failure time, failed run status, the log excerpt the agent saw, verdict
+  category, confidence, true cause, match true/false, postmortem text, the model that wrote it), and a summary view with accuracy
+  and the 4x4 confusion matrix. The human connects Looker Studio to them with their own account
+- [ ] One campaign runner script (5.2) that works through the fixed injection list of 12, a different identity per step, stops at the LLM caps and can resume
 - **Accuracy target: 80-90% on the four-way classification. A goal, not a pass/fail gate.** Report the number that comes out.
   Never leak ground truth to the agents and never reselect incidents after seeing results (5.1).
 - Designed, next steps: time-to-diagnosis, false-positive / false-negative rates (TC-18), partial-data detection (TC-19), memory promotion and the
   memory on/off ablation (TC-31)
-- **Acceptance:** TC-16 and TC-17 with real numbers from about 20 labelled incidents.
+- **Acceptance:** TC-16 and TC-17 with real numbers from the 12 labelled incidents, every one of them scored.
 
 ### Phase 6: Dashboard and access (designed, next steps: not built for the demo)
-The demo shows the BigQuery results table from Phase 5 instead. The items below stay as the design.
+The demo shows Looker Studio over the BigQuery views from Phase 5 instead. The items below stay as the design.
 - [ ] **Frontend decision (updated 2026-10-09): server-rendered, no separate frontend platform, but its own service.** `trace-dashboard`
   (same image as `trace-api`, own entrypoint, runs as `trace-dashboard`) serves Jinja2 templates with Chart.js from a CDN. It is separate from
   `trace-api` so the dashboard identity can read truth-derived accuracy (`evaluation_results` only) while the agent identity never can.
@@ -670,3 +693,10 @@ The demo shows the BigQuery results table from Phase 5 instead. The items below 
 2026-10-11 - Models: Root-Cause on Groq `openai/gpt-oss-120b` with low reasoning effort and no fallback, so every accuracy number comes from one model. Postmortem on Gemini 2.5 Flash, falling back to Groq `openai/gpt-oss-120b` when the daily Gemini quota is exhausted; the model that wrote each postmortem is recorded. Supersedes the 2026-09-28 choice of Gemini for Root-Cause.
 2026-10-11 - Free-tier limits as given by the human (from the provider consoles). Gemini 2.5 Flash: 5 RPM / 250K TPM / 20 RPD. Gemini 2.5 Flash-Lite: 10 RPM / 250K TPM / 20 RPD; other Gemini models also 20 RPD. Gemini embedding: 100 RPM / 30K TPM / 1K RPD. Groq `openai/gpt-oss-120b`: 30 RPM / 8K TPM / 1K RPD / 200K TPD. Consequences: about 20 postmortems uses the whole Gemini day (hence the Groq fallback), and at about 3K tokens a prompt Groq allows two Root-Cause calls a minute and roughly 60 a day, so Root-Cause makes one LLM call per incident.
 2026-10-11 - Standing rules from the human: secret scan before every commit and push; push the `phase-0` branch only, not `main`; show the plan and the cost and wait for approval before any change to IAM, billing, Scheduler, Cloud Run, Pub/Sub or secrets. The dev job is named `trace-target-etl-dev`.
+2026-10-11 - Restricted logging applied (human approved): bucket `trace-target-logs` (us-central1, 30 days), sink `trace-target-sink`, view `target-only`, and `logging.viewAccessor` for `trace-agents` only, conditioned on that view. Verified with description-only edits on dev datasets: the `trace_target_dev` dataset patch and a table `ALTER` both arrived in the bucket (both as `resource.type=bigquery_dataset` Admin Activity entries), and the same edit on `trace_ledger_dev` did not. A new sink took under four minutes to start routing; entries made about 40 s after creation were not captured. Cloud Run Job log routing is still to be verified once the job exists (Phase 1). The logging pricing page could not be read with the available tools; applied on the human's figure of a few MB a month against a 50 GiB free allowance.
+2026-10-11 - Artifact Registry repo `trace` (Docker, us-central1) created with a cleanup policy that keeps the 2 newest versions of each image and deletes the rest; `github-deployer` has `artifactregistry.writer` on that repo only.
+2026-10-11 - Workload Identity Federation: pool `github`, provider `github-actions`, accepting only repository ID 1414002331 and owner ID 64737822 (vaibhavidhumal4/TRACE); only that repository may act as `github-deployer`. No user-managed key exists on any TRACE service account.
+2026-10-11 - `trace-agents` granted `secretAccessor` on `gemini-api-key` and `groq-api-key`; no other identity has access. `trace-evaluator` gets no LLM key while embeddings and the ablation are deferred (narrower than section 6, human approved).
+2026-10-11 - PHASE 0 ACCEPTANCE PASSED: GitHub Actions run 38132931515 signed in as `github-deployer` with no key file, ran `SELECT 1`, inserted one row into `trace_ledger_dev.incident_events` and read it back.
+2026-10-11 - Revised demo plan (human decision): record a real run, not live. ETL on a temporary 10-minute schedule for Phase 1 acceptance, then paused (designed schedule stays every 4 h). One campaign runner does inject -> execute job -> wait for failure -> call `trace-api` -> revert -> score, borrowing `ops-automation`, `trace-agents` (inside `trace-api`) and `trace-evaluator` per step. 12 incidents, 3 of each fault, seed logged before the run, no reselection, every incident scored. Pub/Sub trigger and Phase 2 detection deferred. Results shown in Looker Studio over views in `trace_truth`. Order: Phase 1, then 3, 4, 5.
+2026-10-11 - The human's pasted messages in this project are their own instructions (stated 2026-10-11).

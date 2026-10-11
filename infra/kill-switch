@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Emergency stop: pauses every Cloud Scheduler job and stops every Cloud Run service from serving,
+# so nothing in the project keeps running or billing. Safe to re-run. Nothing is deleted.
+#
+# Usage: infra/kill-switch [--yes]
+# Undo:  gcloud scheduler jobs resume JOB --location REGION
+#        gcloud run services update SERVICE --region REGION --scaling=auto --ingress=all
+set -euo pipefail
+cd "$(dirname "$0")"
+# shellcheck disable=SC1091
+source ./config.env
+
+api_enabled() {
+  gcloud services list --enabled --project "$GCP_PROJECT" --filter="config.name=$1" --format='value(config.name)' | grep -q .
+}
+
+scheduler_jobs=""
+if api_enabled cloudscheduler.googleapis.com; then
+  scheduler_jobs="$(gcloud scheduler jobs list --project "$GCP_PROJECT" --location "$REGION" \
+    --filter='state=ENABLED' --format='value(name.basename())')"
+fi
+
+services=""
+if api_enabled run.googleapis.com; then
+  services="$(gcloud run services list --project "$GCP_PROJECT" --region "$REGION" --format='value(metadata.name)')"
+fi
+
+echo "Project: $GCP_PROJECT  Region: $REGION"
+echo "Scheduler jobs to pause:"
+if [[ -n "$scheduler_jobs" ]]; then sed 's/^/  /' <<<"$scheduler_jobs"; else echo "  (none)"; fi
+echo "Cloud Run services to stop:"
+if [[ -n "$services" ]]; then sed 's/^/  /' <<<"$services"; else echo "  (none)"; fi
+
+if [[ -z "$scheduler_jobs" && -z "$services" ]]; then
+  echo "Nothing to stop."
+  exit 0
+fi
+
+if [[ "${1:-}" != "--yes" ]]; then
+  read -r -p "Proceed? [y/N] " answer
+  [[ "$answer" == "y" || "$answer" == "Y" ]] || { echo "Aborted."; exit 1; }
+fi
+
+failed=0
+
+while read -r job; do
+  [[ -z "$job" ]] && continue
+  if gcloud scheduler jobs pause "$job" --project "$GCP_PROJECT" --location "$REGION" --quiet; then
+    echo "paused: $job"
+  else
+    echo "FAILED to pause: $job" >&2
+    failed=1
+  fi
+done <<<"$scheduler_jobs"
+
+while read -r svc; do
+  [[ -z "$svc" ]] && continue
+  # Manual scaling at 0 instances disables the service. If this gcloud rejects 0, block outside traffic instead
+  # (min-instances is already 0, so a service with no traffic uses no vCPU).
+  if gcloud run services update "$svc" --project "$GCP_PROJECT" --region "$REGION" --scaling=0 --quiet; then
+    echo "scaled to zero: $svc"
+  elif gcloud run services update "$svc" --project "$GCP_PROJECT" --region "$REGION" --ingress=internal --quiet; then
+    echo "ingress set to internal: $svc"
+  else
+    echo "FAILED to stop: $svc" >&2
+    failed=1
+  fi
+done <<<"$services"
+
+if [[ $failed -ne 0 ]]; then
+  echo "Kill switch finished WITH FAILURES. Check the lines above." >&2
+  exit 1
+fi
+echo "Kill switch complete."

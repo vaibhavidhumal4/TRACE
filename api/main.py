@@ -63,6 +63,7 @@ def handle_incident(request: IncidentRequest) -> IncidentResponse:
         status=state["status"],
         completed_stages=state["completed_stages"],
         llm_calls=state["llm_calls"],
+        degraded_reason=state.get("degraded_reason"),
     )
     return IncidentResponse(
         incident_id=incident_id,
@@ -71,4 +72,5 @@ def handle_incident(request: IncidentRequest) -> IncidentResponse:
         llm_calls=state["llm_calls"],
         root_cause_category=verdict.get("root_cause_category"),
         confidence=verdict.get("confidence"),
+        degraded_reason=state.get("degraded_reason"),
     )

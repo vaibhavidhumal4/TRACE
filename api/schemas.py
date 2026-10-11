@@ -59,3 +59,4 @@ class IncidentResponse(BaseModel):
     llm_calls: int
     root_cause_category: str | None = None
     confidence: float | None = None
+    degraded_reason: str | None = None

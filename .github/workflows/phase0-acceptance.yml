@@ -1,0 +1,71 @@
+name: phase0-acceptance
+
+# Phase 0 acceptance: sign in to Google Cloud with no key file (Workload Identity Federation), run SELECT 1 and one
+# insert into the dev ledger. Values below are identifiers, not secrets; they mirror infra/config.env.
+on:
+  workflow_dispatch:
+  push:
+    branches: [phase-0]
+    paths: [.github/workflows/phase0-acceptance.yml]
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT: project-66f56fc9-9de6-4cfd-8cf
+  BQ_LOCATION: us-central1
+  BQ_MAX_BYTES_BILLED: "104857600"
+  LEDGER_DATASET: trace_ledger_dev
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fail if any key file is present or configured
+        run: |
+          if [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]; then echo "credentials env var set before auth"; exit 1; fi
+          if git ls-files | grep -i -E '(-key|credentials).*\.json$'; then echo "key-like file in repo"; exit 1; fi
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/616734266046/locations/global/workloadIdentityPools/github/providers/github-actions
+          service_account: github-deployer@project-66f56fc9-9de6-4cfd-8cf.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Show the signed-in identity
+        run: gcloud auth list --filter=status:ACTIVE --format='value(account)'
+
+      - name: SELECT 1
+        run: |
+          bq --project_id="$GCP_PROJECT" --location="$BQ_LOCATION" query --use_legacy_sql=false \
+            --maximum_bytes_billed="$BQ_MAX_BYTES_BILLED" 'SELECT 1 AS ok'
+
+      - name: Insert one ledger row (idempotent on the run ID)
+        run: |
+          key="phase0-acceptance:${GITHUB_RUN_ID}"
+          table="\`${GCP_PROJECT}.${LEDGER_DATASET}.incident_events\`"
+          bq --project_id="$GCP_PROJECT" --location="$BQ_LOCATION" query --use_legacy_sql=false \
+            --maximum_bytes_billed="$BQ_MAX_BYTES_BILLED" \
+            --parameter="key::${key}" --parameter="sha::${GITHUB_SHA}" "
+            INSERT INTO ${table} (event_id, incident_id, stage, agent, created_at, idempotency_key, payload)
+            SELECT GENERATE_UUID(), 'phase0-acceptance', 'acceptance', 'github-deployer', CURRENT_TIMESTAMP(), @key,
+                   JSON_OBJECT('commit', @sha)
+            FROM (SELECT 1)
+            WHERE NOT EXISTS (
+              SELECT 1 FROM ${table}
+              WHERE DATE(created_at) >= DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY) AND idempotency_key = @key)"
+
+      - name: Read the row back
+        run: |
+          key="phase0-acceptance:${GITHUB_RUN_ID}"
+          rows=$(bq --project_id="$GCP_PROJECT" --location="$BQ_LOCATION" query --use_legacy_sql=false --format=csv \
+            --maximum_bytes_billed="$BQ_MAX_BYTES_BILLED" --parameter="key::${key}" "
+            SELECT COUNT(*) FROM \`${GCP_PROJECT}.${LEDGER_DATASET}.incident_events\`
+            WHERE DATE(created_at) >= DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY) AND idempotency_key = @key" | tail -1)
+          echo "rows with this run's key: $rows"
+          test "$rows" = "1"

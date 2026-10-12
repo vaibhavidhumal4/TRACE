@@ -162,3 +162,18 @@ def test_clean_key_removes_paste_artifacts():
     assert clean_key("\x1b[200~abc_DEF-123\x1b[201~\n") == "abc_DEF-123"
     assert clean_key("  abc\x01def\x7f\r\n") == "abcdef"
     assert clean_key("abc_DEF-123") == "abc_DEF-123"
+
+
+def test_postmortem_falls_back_to_groq_after_a_repeated_gemini_failure():
+    from api.llm import LLMError
+
+    class FailingGemini(FakeLLM):
+        def gemini(self, *args, **kwargs):
+            raise LLMError("gemini: HTTP 503")
+
+    deps = make_deps(llm=FailingGemini())
+    incident_id = deps.store.open_incident("trace-target-etl-dev-abc12", "direct_call")
+    result = postmortem.run(incident_id, deps)
+    assert result["model"] == "openai/gpt-oss-120b"
+    assert result["fallback_reason"] == "gemini: HTTP 503"
+    assert deps.store.verdicts[-1]["model"] == "openai/gpt-oss-120b"

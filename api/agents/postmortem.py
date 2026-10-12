@@ -1,12 +1,13 @@
 """Postmortem: a short Markdown report from the incident timeline. Gemini, with Groq as the fallback when Gemini's
-quota is exhausted. The model that actually wrote the text is recorded with it."""
+quota is exhausted or Gemini fails repeatedly. The model that actually wrote the text is recorded with it, along
+with the reason for any fallback."""
 
 from __future__ import annotations
 
 import json
 import time
 
-from api.llm import QuotaExhausted
+from api.llm import LLMError
 
 SYSTEM = """You write incident postmortems for a data engineering team. Write clear, factual Markdown, 250 to 400 \
 words, with exactly these sections: "## Summary", "## Impact", "## Timeline", "## Root cause", "## Evidence", \
@@ -38,7 +39,8 @@ def run(incident_id: str, deps) -> dict:
     fallback_reason = None
     try:
         completion = deps.llm.gemini(SYSTEM, prompt)
-    except QuotaExhausted as exc:
+    except LLMError as exc:
+        # Gemini's quota is exhausted, or it failed again after the client's own retry (5xx or timeout).
         calls += 1
         fallback_reason = str(exc)
         completion = deps.llm.groq(SYSTEM, prompt, json_mode=False, max_tokens=1500)

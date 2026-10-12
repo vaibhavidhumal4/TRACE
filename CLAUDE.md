@@ -525,7 +525,8 @@ structured-log helper and the `incident_state` view are built in Phase 4 where t
 
 ### Phase 3: Fault injector and ground truth
 - [x] Injector job named `trace-maintenance-runner` with the four faults in 5.1, `fault_ledger` written **before** injection, reverter + dead-man's switch
-- [ ] Fixed injection list (3 of each fault, 12 in total) with a logged seed, decided before any run
+- [x] Fixed injection list (3 of each fault, 12 in total) with a logged seed, decided before any run
+  (campaign `demo-1`, seed 20261012, plan recorded 2026-10-12 02:59:57 UTC, before the first injection)
 - [x] Plan for the human's approval: impersonation of `ops-automation` and `trace-evaluator` and invoke rights on `trace-api` for the campaign runner (5.2)
   (approved 2026-10-11; the invoke right is granted when `trace-api` is deployed)
 - [x] Verify each fault's observable signature, record the real error text in the decision log, and tell the human if two faults are confusable
@@ -544,17 +545,22 @@ structured-log helper and the `incident_state` view are built in Phase 4 where t
   Status 2026-10-11: TC-20 passed live (`tests/leakage_audit.py`); TC-26 and TC-27 pass as unit tests and the repeat-request behaviour was confirmed live. TC-01 to TC-09 are NOT ticked: the Test Case Document is not in the repo, so they could not be mapped to tests.
 
 ### Phase 5: Evaluation and campaign
-- [ ] Deterministic category match run as `trace-evaluator` after the orchestrator finishes; accuracy and a 4x4 confusion matrix. No LLM
-- [ ] Views in `trace_truth` for Looker Studio, readable by the human owner and `trace-evaluator` only (agents must never read them):
+- [x] Deterministic category match run as `trace-evaluator` after the orchestrator finishes; accuracy and a 4x4 confusion matrix. No LLM
+- [x] Views in `trace_truth` for Looker Studio, readable by the human owner and `trace-evaluator` only (agents must never read them):
   an incident view with one row per incident (incident id, failure time, failed run status, the log excerpt the agent saw, verdict
   category, confidence, true cause, match true/false, postmortem text, the model that wrote it), and a summary view with accuracy
   and the 4x4 confusion matrix. The human connects Looker Studio to them with their own account
-- [ ] One campaign runner script (5.2) that works through the fixed injection list of 12, a different identity per step, stops at the LLM caps and can resume
+  (built as `incident_results`, `campaign_summary` and `confusion_matrix` in the separate dataset `trace_results`, not inside `trace_truth`;
+  same access rule. The Looker Studio report itself is the human's step and is not verified here)
+- [x] One campaign runner script (5.2) that works through the fixed injection list of 12, a different identity per step, stops at the LLM caps and can resume
+  (resume was exercised live: `demo-1` ran as position 1, then positions 2-12. No LLM cap was reached during the campaign, so the stop-at-cap path was not exercised live; the `degraded` route is covered by the TC-27 unit test)
 - **Accuracy target: 80-90% on the four-way classification. A goal, not a pass/fail gate.** Report the number that comes out.
   Never leak ground truth to the agents and never reselect incidents after seeing results (5.1).
 - Designed, next steps: time-to-diagnosis, false-positive / false-negative rates (TC-18), partial-data detection (TC-19), memory promotion and the
   memory on/off ablation (TC-31)
 - **Acceptance:** TC-16 and TC-17 with real numbers from the 12 labelled incidents, every one of them scored.
+  **Numbers produced 2026-10-12** (campaign `demo-1`: 12 of 12 scored, 12 correct, see the decision log). TC-16 and TC-17 are NOT formally ticked:
+  the Test Case Document is not in the repo, so their exact wording could not be checked against these results.
 
 ### Phase 6: Dashboard and access (designed, next steps: not built for the demo)
 The demo shows Looker Studio over the BigQuery views from Phase 5 instead. The items below stay as the design.
@@ -729,3 +735,9 @@ The demo shows Looker Studio over the BigQuery views from Phase 5 instead. The i
 2026-10-11 - CAMPAIGN REHEARSAL on dev (`dev-rehearsal-1`, seed 7, first 2 of 12): plan written before the first injection; timeout fault -> `resource_limit_exceeded` (0.97), permission fault -> `authorization_failure` (0.98); both scored correct by `trace-evaluator`; the dev target matched its baseline after each revert; both schedules paused afterwards. The three views in `trace_results_dev` return the expected rows (12 planned, 2 run, 2 scored, 2 correct; 20 confusion-matrix cells). Views then applied to `trace_results` (prod).
 2026-10-11 - Gemini `gemini-3.8-flash` is unreliable under load: of five postmortem attempts today, two succeeded (16 s and about 45 s) and three failed (two HTTP 503 "high demand", one read timeout pair). The service now allows 200 s per call and retries once on a timeout or 5xx; the campaign runner makes one more pass for incidents with a verdict but no postmortem, and `--limit 0` repeats that pass later. Scores do not depend on the postmortem.
 2026-10-12 - Postmortem fallback widened by the human: Groq also writes the postmortem when Gemini fails again after the client's one retry (5xx or timeout), not only on exhausted quota. The model and the fallback reason are recorded per postmortem. Root-Cause stays on Groq only; scores do not depend on the postmortem.
+2026-10-12 - CAMPAIGN `demo-1` on prod, seed 20261012, plan recorded 02:59:57 UTC before any injection; injections 03:00-04:06 UTC, finished 04:11 UTC. Seeded order: iam_revoked, bq_extra_column, task_timeout_kill, bad_endpoint_url, bq_extra_column, bad_endpoint_url, iam_revoked, task_timeout_kill, bq_extra_column, task_timeout_kill, bad_endpoint_url, iam_revoked. All 12 incidents scored by `trace-evaluator`, none dropped, re-run or replaced. RESULT: 12 of 12 correct, accuracy 1.0. Confusion matrix (true x predicted): 3 on the diagonal for each of `authorization_failure`, `warehouse_schema_mismatch`, `resource_limit_exceeded`, `dns_or_endpoint_unreachable`; every off-diagonal cell and every `no_verdict` cell is 0. Root-Cause was Groq `openai/gpt-oss-120b` for all 12, one call each, confidence 0.97-0.99; time to diagnosis 111-327 s.
+2026-10-12 - CAVEAT on the `demo-1` number: 12 incidents, 3 per category, is a small sample, and Phase 3 already measured the four fault signatures as distinct and non-confusable. 12 of 12 shows the pipeline works end to end on four clearly separable faults; it is not evidence of 100% accuracy in general (with 12 of 12 the 95% lower bound on the true rate is only about 76%), and it says nothing about the deferred faults, `unknown`, or control runs.
+2026-10-12 - `demo-1` postmortems: all 12 written. `gemini-3.8-flash` wrote 3 (positions 1, 6, 8; position 6 on the client's one retry). Groq `openai/gpt-oss-120b` wrote 9 as the fallback: positions 2, 3, 5, 7 after Gemini HTTP 503 "high demand", and positions 4, 9, 10, 11, 12 after Gemini HTTP 429 (quota). Model and fallback reason are stored per postmortem. Scores do not depend on the postmortem.
+2026-10-12 - `demo-1` position 4 (`trace-target-etl-wqtfm`) ended `degraded` on its first pass: the verdict was already stored, then Gemini failed and the Groq fallback call returned HTTP 524 from Cloudflare, so only the postmortem was missing. It was scored at once from the stored verdict (correct); the runner's postmortem-retry pass wrote the postmortem at 04:11 UTC. Root-Cause was not re-run.
+2026-10-12 - `demo-1` position 10 (`trace-target-etl-jv6pn`, 5 s timeout) shows run status SUCCESS and Triage severity Low: the timeout fired late, the pipeline wrote its END row (36/36 states, 36 rows) at 03:57:56 and Cloud Run marked the task failed at 03:57:59 with "The configured timeout was reached" (exit code 0). The verdict `resource_limit_exceeded` is correct. Kept as is, no reselection. Finding: a timeout value near the pipeline's real runtime gives a weaker signature than the 3 s and 4 s runs (orphan RUNNING row), and rule-based Triage under-rates it because it trusts `pipeline_runs`.
+2026-10-12 - After `demo-1`: prod job timeout 900 s, no `OPEN_METEO_URL` override, `trace-etl` WRITER on `trace_target`, `aqi_hourly` has 11 columns, 0 open ledger rows in prod and dev, both Scheduler jobs PAUSED. Local run logs (`*.log`) are gitignored and not committed.

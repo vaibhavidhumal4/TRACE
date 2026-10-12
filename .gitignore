@@ -20,3 +20,6 @@ application_default_credentials.json
 # Local tooling
 .claude/
 .DS_Store
+
+# Local run logs
+*.log

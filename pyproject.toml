@@ -7,4 +7,4 @@ extend-exclude = ["reference"]
 select = ["E", "F", "I", "B", "UP"]
 
 [tool.pytest.ini_options]
-testpaths = ["etl/tests", "api/tests", "evaluator/tests"]
+testpaths = ["etl/tests", "api/tests", "evaluator/tests", "dashboard/tests"]

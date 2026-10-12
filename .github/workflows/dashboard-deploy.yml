@@ -1,0 +1,67 @@
+name: dashboard-deploy
+
+# Test, build the dashboard image and deploy trace-dashboard. The service is NOT public: no unauthenticated access
+# is granted here or anywhere else, and who may invoke it is managed outside this workflow. Keyless sign-in.
+on:
+  push:
+    branches: [phase-6]
+    paths: ["dashboard/**", ".github/workflows/dashboard-deploy.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: dashboard-deploy
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT: project-66f56fc9-9de6-4cfd-8cf
+  REGION: us-central1
+  IMAGE: us-central1-docker.pkg.dev/project-66f56fc9-9de6-4cfd-8cf/trace/dashboard
+  DASHBOARD_SA: trace-dashboard@project-66f56fc9-9de6-4cfd-8cf.iam.gserviceaccount.com
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: dashboard/requirements-dev.txt
+      - name: Lint and test before building
+        run: |
+          pip install -r dashboard/requirements-dev.txt
+          ruff check dashboard
+          pytest -q dashboard/tests
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/616734266046/locations/global/workloadIdentityPools/github/providers/github-actions
+          service_account: github-deployer@project-66f56fc9-9de6-4cfd-8cf.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Build and push
+        run: |
+          docker build -f dashboard/Dockerfile -t "$IMAGE:$GITHUB_SHA" .
+          docker push "$IMAGE:$GITHUB_SHA"
+          bytes=$(docker manifest inspect "$IMAGE:$GITHUB_SHA" | jq '[.layers[].size] | add')
+          echo "compressed image: $(( bytes / 1024 / 1024 )) MB"
+
+      - name: Deploy trace-dashboard (private, one instance at most)
+        run: |
+          gcloud run deploy trace-dashboard --project "$GCP_PROJECT" --region "$REGION" \
+            --image "$IMAGE:$GITHUB_SHA" --service-account "$DASHBOARD_SA" \
+            --no-allow-unauthenticated --ingress=all \
+            --min-instances=0 --max-instances=1 --concurrency=20 --timeout=60 --cpu=1 --memory=256Mi \
+            --set-env-vars="GCP_PROJECT=$GCP_PROJECT,RESULTS_DATASET=trace_results,CACHE_TTL_S=60" --quiet
+
+      - name: Fail if the service is public
+        run: |
+          policy=$(gcloud run services get-iam-policy trace-dashboard --project "$GCP_PROJECT" --region "$REGION" --format=json)
+          echo "$policy" | jq -r '[.bindings[]?.members[]?] | map(select(startswith("user:") | not)) | .[]'
+          if echo "$policy" | grep -E 'allUsers|allAuthenticatedUsers'; then echo "trace-dashboard is public"; exit 1; fi

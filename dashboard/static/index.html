@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TRACE dashboard</title>
+<link rel="stylesheet" href="static/app.css">
+<script src="static/theme.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 32 32" width="28" height="28" aria-hidden="true">
+      <rect x="1" y="1" width="30" height="30" rx="7" fill="none" stroke="currentColor" stroke-width="2"/>
+      <path d="M6 20h5l3-9 4 13 3-8h5" fill="none" stroke="currentColor" stroke-width="2.2"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <div>
+      <div class="brand-name">TRACE</div>
+      <div class="brand-sub">Multi-Agent Incident Investigation &amp; Root-Cause Analysis</div>
+    </div>
+  </div>
+  <nav class="tabs" role="tablist" aria-label="Sections">
+    <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
+    <button role="tab" data-tab="incidents" aria-selected="false">Incidents</button>
+    <button role="tab" data-tab="faults" aria-selected="false">Faults &amp; ledger</button>
+    <button role="tab" data-tab="architecture" aria-selected="false">Architecture</button>
+  </nav>
+  <div class="controls">
+    <label class="control">
+      <span class="control-label">Campaign</span>
+      <select id="campaign" aria-label="Campaign"></select>
+    </label>
+    <div id="live" class="live" role="status" aria-live="polite"><span class="dot"></span><span id="live-text">Loading…</span></div>
+    <button id="theme-toggle" class="ghost" type="button" aria-label="Switch theme">Light</button>
+  </div>
+</header>
+
+<main id="main">
+  <div id="banner" class="banner" hidden></div>
+  <section id="tab-overview" class="tab" role="tabpanel"></section>
+  <section id="tab-incidents" class="tab" role="tabpanel" hidden></section>
+  <section id="tab-faults" class="tab" role="tabpanel" hidden></section>
+  <section id="tab-architecture" class="tab" role="tabpanel" hidden></section>
+</main>
+
+<div id="scrim" class="scrim" hidden></div>
+<aside id="drawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden></aside>
+<div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+
+<footer class="foot">
+  Read-only view of the BigQuery views in <code id="dataset-name">trace_results</code>. This page cannot inject faults or run anything.
+</footer>
+<script src="static/app.js"></script>
+</body>
+</html>

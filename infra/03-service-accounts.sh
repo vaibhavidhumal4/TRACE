@@ -61,9 +61,7 @@ GRANTS=(
   "dataset|trace-mcp|roles/bigquery.dataViewer|$DS_TARGET"
   "project|trace-mcp|roles/bigquery.jobUser|"
 
-  "dataset|trace-dashboard|roles/bigquery.dataViewer|$DS_LEDGER"
-  "dataset|trace-dashboard|roles/bigquery.dataViewer|$DS_TARGET"
-  "table|trace-dashboard|roles/bigquery.dataViewer|$DS_TRUTH.evaluation_results"
+  # trace-dashboard reads the trace_results views only; that grant lives in 11-dashboard-iam.sh.
   "project|trace-dashboard|roles/bigquery.jobUser|"
 
   "project|github-deployer|roles/run.developer|"

@@ -1,5 +1,5 @@
--- Reporting views for Looker Studio. They live in trace_results (created by hand with a restricted access list: the
--- owner and trace-evaluator only), because they join ground truth to the ledger. Agents have no access.
+-- Reporting views for Looker Studio and the trace-dashboard service. They live in trace_results (created by hand with
+-- a restricted access list), because they join ground truth to the ledger. Agents have no access.
 -- One row per PLANNED injection, so an item that was never run or never scored is visible, not missing.
 
 CREATE OR REPLACE VIEW `trace_results${SUFFIX}.incident_results` AS
@@ -64,7 +64,15 @@ SELECT
   END AS outcome,
   s.time_to_diagnosis_sec,
   pm.hypothesis AS postmortem_text,
-  pm.model AS postmortem_model
+  pm.model AS postmortem_model,
+  -- Added for the dashboard (appended, so existing Looker Studio fields keep their positions).
+  JSON_VALUE(pme.payload.fallback_reason) AS postmortem_fallback_reason,
+  TO_JSON_STRING(tri.payload.reasons) AS triage_reasons,
+  TO_JSON_STRING(rem.payload.proposals) AS remediation_proposals,
+  SAFE_CAST(JSON_VALUE(rem.payload.executed) AS BOOL) AS remediation_executed,
+  p.seed,
+  f.injected_at,
+  f.reverted_at
 FROM plan p
 LEFT JOIN faults f ON f.campaign_id = p.campaign_id AND f.plan_position = p.position
 LEFT JOIN scores s ON s.fault_id = f.fault_id
@@ -73,7 +81,9 @@ LEFT JOIN events win ON win.incident_id = i.incident_id AND win.stage = 'executi
 LEFT JOIN events tri ON tri.incident_id = i.incident_id AND tri.stage = 'triage'
 LEFT JOIN events evd ON evd.incident_id = i.incident_id AND evd.stage = 'evidence'
 LEFT JOIN verdicts rc ON rc.incident_id = i.incident_id AND rc.agent_name = 'root_cause'
-LEFT JOIN verdicts pm ON pm.incident_id = i.incident_id AND pm.agent_name = 'postmortem';
+LEFT JOIN verdicts pm ON pm.incident_id = i.incident_id AND pm.agent_name = 'postmortem'
+LEFT JOIN events rem ON rem.incident_id = i.incident_id AND rem.stage = 'remediation'
+LEFT JOIN events pme ON pme.incident_id = i.incident_id AND pme.stage = 'postmortem';
 
 CREATE OR REPLACE VIEW `trace_results${SUFFIX}.campaign_summary` AS
 SELECT

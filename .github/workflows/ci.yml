@@ -4,9 +4,9 @@ name: ci
 on:
   push:
     branches-ignore: [main]
-    paths: ["etl/**", "api/**", "injector/**", "pyproject.toml", ".github/workflows/ci.yml"]
+    paths: ["etl/**", "api/**", "injector/**", "dashboard/**", "pyproject.toml", ".github/workflows/ci.yml"]
   pull_request:
-    paths: ["etl/**", "api/**", "injector/**", "pyproject.toml", ".github/workflows/ci.yml"]
+    paths: ["etl/**", "api/**", "injector/**", "dashboard/**", "pyproject.toml", ".github/workflows/ci.yml"]
 
 permissions:
   contents: read
@@ -24,7 +24,8 @@ jobs:
           cache-dependency-path: |
             etl/requirements-dev.txt
             api/requirements-dev.txt
-      - run: pip install -r etl/requirements-dev.txt -r api/requirements-dev.txt -r injector/requirements.txt
-      - run: ruff check etl api injector
-      - run: ruff format --check etl api injector
+            dashboard/requirements-dev.txt
+      - run: pip install -r etl/requirements-dev.txt -r api/requirements-dev.txt -r injector/requirements.txt -r dashboard/requirements-dev.txt
+      - run: ruff check etl api injector dashboard
+      - run: ruff format --check etl api injector dashboard
       - run: pytest -q
